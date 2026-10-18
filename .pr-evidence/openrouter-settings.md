@@ -21,3 +21,8 @@ component previews or generated illustrations.
 
 The eight asterisks are the interface's constant saved-secret indicator. They do
 not encode a credential or its length. The screenshots contain only fixture data.
+
+The `openrouter-account-desktop.png` and `openrouter-account-mobile.png` captures
+exercise the full overview page after adding the selected provider alias to the
+balance response/card. They use a local `primary` alias and fictional credit
+totals (100 total, 10 used). They do not contain an actual account balance.
