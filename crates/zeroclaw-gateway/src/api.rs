@@ -2547,7 +2547,7 @@ pub(crate) mod tests {
             all_proxy: Some(format!("http://{}", listener.local_addr().unwrap())),
             ..Default::default()
         };
-        let server = tokio::spawn(async move {
+        let server = ::zeroclaw_spawn::spawn!(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0; 4096];
             let size = stream.read(&mut request).await.unwrap();
