@@ -19,6 +19,7 @@ const OPENROUTER_CREDITS_URL: &str = "https://openrouter.ai/api/v1/credits";
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 pub struct OpenRouterCreditsResponse {
+    pub provider_alias: String,
     pub total_credits: f64,
     pub total_usage: f64,
     pub remaining_credits: f64,
@@ -35,7 +36,7 @@ struct OpenRouterCreditsData {
     total_usage: f64,
 }
 
-fn active_openrouter_management_key(config: &Config) -> Option<String> {
+fn active_openrouter_management_key(config: &Config) -> Option<(String, String)> {
     let mut agents: Vec<_> = config.agents.iter().collect();
     agents.sort_by_key(|(left, _)| *left);
 
@@ -60,8 +61,20 @@ fn active_openrouter_management_key(config: &Config) -> Option<String> {
             .management_api_key
             .as_deref()
             .filter(|key| !key.is_empty())
-            .map(str::to_owned)
+            .map(|key| (alias.to_owned(), key.to_owned()))
     })
+}
+
+fn openrouter_credits_client(
+    proxy: &zeroclaw_config::schema::ProxyConfig,
+) -> anyhow::Result<reqwest::Client> {
+    proxy
+        .try_apply_to_reqwest_builder(
+            reqwest::Client::builder().timeout(Duration::from_secs(5)),
+            "model_provider.openrouter",
+        )?
+        .build()
+        .map_err(Into::into)
 }
 
 fn integration_entry_json(
@@ -1371,18 +1384,18 @@ pub async fn handle_api_openrouter_credits(
         return e.into_response();
     }
 
-    let management_key = {
+    let (selection, proxy) = {
         let config = state.config.read();
-        active_openrouter_management_key(&config)
+        (
+            active_openrouter_management_key(&config),
+            config.proxy.clone(),
+        )
     };
-    let Some(management_key) = management_key else {
+    let Some((provider_alias, management_key)) = selection else {
         return StatusCode::NO_CONTENT.into_response();
     };
 
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-    {
+    let client = match openrouter_credits_client(&proxy) {
         Ok(client) => client,
         Err(error) => {
             ::zeroclaw_log::record!(
@@ -1441,6 +1454,7 @@ pub async fn handle_api_openrouter_credits(
     };
 
     Json(OpenRouterCreditsResponse {
+        provider_alias,
         total_credits: credits.total_credits,
         total_usage: credits.total_usage,
         remaining_credits: credits.total_credits - credits.total_usage,
@@ -2468,8 +2482,8 @@ pub(crate) mod tests {
         config.agents.insert("assistant".into(), agent);
 
         assert_eq!(
-            active_openrouter_management_key(&config).as_deref(),
-            Some("management-key")
+            active_openrouter_management_key(&config),
+            Some(("primary".into(), "management-key".into()))
         );
 
         config
@@ -2520,6 +2534,76 @@ pub(crate) mod tests {
         config.agents.insert("assistant".into(), agent);
 
         assert!(active_openrouter_management_key(&config).is_none());
+    }
+
+    #[tokio::test]
+    async fn openrouter_credits_client_uses_the_selected_service_proxy() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = zeroclaw_config::schema::ProxyConfig {
+            enabled: true,
+            scope: zeroclaw_config::schema::ProxyScope::Services,
+            services: vec!["model_provider.openrouter".into()],
+            all_proxy: Some(format!("http://{}", listener.local_addr().unwrap())),
+            ..Default::default()
+        };
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let size = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&request[..size]).into_owned()
+        });
+        let client = openrouter_credits_client(&proxy).unwrap();
+        assert!(
+            client
+                .get("https://balance-test.invalid/credits")
+                .send()
+                .await
+                .is_err()
+        );
+        let request = tokio::time::timeout(Duration::from_secs(6), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(request.starts_with("CONNECT balance-test.invalid:443"));
+    }
+
+    #[test]
+    fn openrouter_credits_return_the_selected_alias_with_its_key() {
+        let mut config = Config::default();
+        for (agent_alias, provider_alias) in [("a-agent", "first"), ("b-agent", "second")] {
+            config.providers.models.openrouter.insert(
+                provider_alias.into(),
+                zeroclaw_config::schema::OpenRouterModelProviderConfig {
+                    base: zeroclaw_config::schema::ModelProviderConfig {
+                        api_key: Some("inference-fixture".into()),
+                        ..Default::default()
+                    },
+                    management_api_key: Some(format!("key-{provider_alias}")),
+                    credit_balance_enabled: true,
+                },
+            );
+            config.agents.insert(
+                agent_alias.into(),
+                zeroclaw_config::schema::AliasedAgentConfig {
+                    model_provider: format!("openrouter.{provider_alias}").into(),
+                    ..Default::default()
+                },
+            );
+        }
+        assert_eq!(
+            active_openrouter_management_key(&config),
+            Some(("first".into(), "key-first".into()))
+        );
+        config.agents.get_mut("a-agent").unwrap().enabled = false;
+        assert_eq!(
+            active_openrouter_management_key(&config),
+            Some(("second".into(), "key-second".into()))
+        );
     }
 
     #[derive(Default)]

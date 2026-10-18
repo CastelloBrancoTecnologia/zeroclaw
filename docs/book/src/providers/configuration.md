@@ -180,6 +180,11 @@ to replace it. The saved key is never read back into the browser. Disabling
 the balance option retains the key and leaves inference enabled. Installations
 upgrading from automatic balance reporting must explicitly enable this option.
 
+The card identifies the selected alias as `openrouter.<alias>`. If more than one
+enabled agent qualifies, the first agent in alphabetical order selects the
+reported alias. Credit requests honor the proxy configured for
+`model_provider.openrouter` and retain a five-second timeout.
+
 Create this credential as a Management API key in OpenRouter. It is distinct
 from the alias's inference `api_key`, is stored as a secret, and is never sent
 to the browser. For example:

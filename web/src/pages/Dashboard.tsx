@@ -306,6 +306,11 @@ function OpenRouterCreditsCard({
           style={{ color: "var(--pc-text-muted)" }}
         >
           {t("dashboard.openrouter_balance")}
+          {credits.provider_alias && (
+            <span className="block normal-case tracking-normal break-all">
+              openrouter.{credits.provider_alias}
+            </span>
+          )}
         </span>
       </div>
       <p
