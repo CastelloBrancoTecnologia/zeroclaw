@@ -166,11 +166,19 @@ Schema-mirror env overrides win at startup. They replace the in-memory credentia
 
 ### OpenRouter dashboard balance
 
-An OpenRouter alias may also carry a separate `management_api_key`. When an
+An OpenRouter alias may also carry a separate `management_api_key`. Enable
+`credit_balance_enabled` for that alias to opt in (the default is `false`). When an
 enabled agent uses that alias, the dashboard queries OpenRouter's credits API
 through the authenticated ZeroClaw gateway and shows the remaining account
 balance. The card is omitted when the alias is inactive, either credential is
-missing, or the credits API cannot be reached.
+missing, balance reporting is disabled, or the credits API cannot be reached.
+
+In the web dashboard, open **Config → Model providers → OpenRouter → your
+alias → Connection**. Set **Management API Key**, enable **Credit Balance
+Enabled**, and save. A stored key is represented by `********`; use **Change**
+to replace it. The saved key is never read back into the browser. Disabling
+the balance option retains the key and leaves inference enabled. Installations
+upgrading from automatic balance reporting must explicitly enable this option.
 
 Create this credential as a Management API key in OpenRouter. It is distinct
 from the alias's inference `api_key`, is stored as a secret, and is never sent
@@ -180,6 +188,7 @@ to the browser. For example:
 [providers.models.openrouter.primary]
 api_key = "op://platform/openrouter/inference-key"
 management_api_key = "op://platform/openrouter/management-key"
+credit_balance_enabled = true
 model = "openai/gpt-4o-mini"
 ```
 

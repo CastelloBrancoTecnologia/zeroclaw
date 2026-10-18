@@ -48,6 +48,9 @@ fn active_openrouter_management_key(config: &Config) -> Option<String> {
             return None;
         }
         let provider = config.providers.models.openrouter.get(alias)?;
+        if !provider.credit_balance_enabled {
+            return None;
+        }
         provider
             .base
             .api_key
@@ -2450,6 +2453,7 @@ pub(crate) mod tests {
                 ..Default::default()
             },
             management_api_key: Some("management-key".into()),
+            credit_balance_enabled: true,
         };
         config
             .providers
@@ -2468,6 +2472,29 @@ pub(crate) mod tests {
             Some("management-key")
         );
 
+        config
+            .providers
+            .models
+            .openrouter
+            .get_mut("primary")
+            .unwrap()
+            .credit_balance_enabled = false;
+        assert!(active_openrouter_management_key(&config).is_none());
+        // Disabling reporting retains both credentials and inference routing.
+        let provider = config
+            .providers
+            .models
+            .openrouter
+            .get_mut("primary")
+            .unwrap();
+        assert_eq!(provider.base.api_key.as_deref(), Some("inference-key"));
+        assert_eq!(
+            provider.management_api_key.as_deref(),
+            Some("management-key")
+        );
+        provider.credit_balance_enabled = true;
+        assert!(active_openrouter_management_key(&config).is_some());
+
         config.agents.get_mut("assistant").unwrap().enabled = false;
         assert!(active_openrouter_management_key(&config).is_none());
     }
@@ -2477,6 +2504,7 @@ pub(crate) mod tests {
         let mut config = Config::default();
         let provider = zeroclaw_config::schema::OpenRouterModelProviderConfig {
             management_api_key: Some("management-key".into()),
+            credit_balance_enabled: true,
             ..Default::default()
         };
         config

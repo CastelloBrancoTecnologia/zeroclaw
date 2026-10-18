@@ -4653,6 +4653,7 @@ mod tests {
                             ..Default::default()
                         },
                         management_api_key: None,
+                        credit_balance_enabled: false,
                     },
                 );
                 p
@@ -4741,6 +4742,7 @@ mod tests {
                             ..Default::default()
                         },
                         management_api_key: None,
+                        credit_balance_enabled: false,
                     },
                 );
                 providers
@@ -4996,6 +4998,7 @@ mod tests {
                             ..Default::default()
                         },
                         management_api_key: None,
+                        credit_balance_enabled: false,
                     },
                 );
                 p
@@ -5072,6 +5075,7 @@ mod tests {
                             ..Default::default()
                         },
                         management_api_key: None,
+                        credit_balance_enabled: false,
                     },
                 );
                 p
@@ -5127,6 +5131,7 @@ mod tests {
                             ..Default::default()
                         },
                         management_api_key: None,
+                        credit_balance_enabled: false,
                     },
                 );
                 p

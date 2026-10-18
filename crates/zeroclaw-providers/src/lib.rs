@@ -3743,6 +3743,7 @@ mod tests {
             OpenRouterModelProviderConfig {
                 base: ModelProviderConfig::default(),
                 management_api_key: None,
+                credit_balance_enabled: false,
             },
         );
         let options = provider_runtime_options_for_alias(&config, "openai", "primary");
