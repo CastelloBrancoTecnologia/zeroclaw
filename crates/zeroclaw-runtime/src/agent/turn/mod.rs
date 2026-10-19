@@ -1877,6 +1877,7 @@ async fn run_tool_call_loop_impl<'a>(
     // One `BudgetWarning` per turn at most (see `announce_budget_warning`).
     let mut budget_warning_sent = false;
 
+    let mut completion_limit = max_iter::CompletionLimit::LocalIterations(max_iterations);
     for iteration in 0..max_iterations {
         let mut has_new_user_input = iteration == 0;
         // Re-resolved every iteration, against the tools callable *right now*.
@@ -3279,6 +3280,7 @@ async fn run_tool_call_loop_impl<'a>(
             &mut prompt_approval_tool_signatures,
             iteration,
             knobs.dedup_enabled,
+            Some(&loop_detector),
         )
         .await?;
 
@@ -3452,6 +3454,7 @@ async fn run_tool_call_loop_impl<'a>(
             individual_results,
             tool_results,
             detection_relevant_output,
+            loop_stopped,
         } = collect_tool_results(
             ordered_results,
             &tool_calls,
@@ -3465,7 +3468,7 @@ async fn run_tool_call_loop_impl<'a>(
             turn_id,
         )?;
 
-        if !cancelled_mid_batch {
+        if !cancelled_mid_batch && !loop_stopped {
             check_identical_output_abort(
                 &detection_relevant_output,
                 loop_started_at,
@@ -3488,6 +3491,11 @@ async fn run_tool_call_loop_impl<'a>(
 
         if cancelled_mid_batch {
             return Err(ToolLoopCancelled.into());
+        }
+
+        if loop_stopped {
+            completion_limit = max_iter::CompletionLimit::LoopDetected;
+            break;
         }
 
         let queued_sop_actions = crate::sop::executor::drain_live_actions(&live_sop_queue);
@@ -3573,7 +3581,7 @@ async fn run_tool_call_loop_impl<'a>(
         temperature,
         pacing,
         cancellation_token.as_ref(),
-        max_iter::CompletionLimit::LocalIterations(max_iterations),
+        completion_limit,
         accumulated_display_text,
         turn_id,
         knobs,

@@ -20,6 +20,7 @@ use zeroclaw_tool_call_parser::{strip_think_tags, strip_trailing_terminal_marker
 pub(crate) enum CompletionLimit {
     LocalIterations(usize),
     ExecutionTree,
+    LoopDetected,
 }
 
 impl CompletionLimit {
@@ -29,13 +30,19 @@ impl CompletionLimit {
                 format!("Agent exceeded maximum tool iterations ({limit})")
             }
             Self::ExecutionTree => "Agent exhausted the execution-tree iteration budget".into(),
+            Self::LoopDetected => "Repeated tool calls were stopped by the loop detector".into(),
         }
     }
 
     /// The iteration-cap stop, shared by the `ErrorAtCap` exit and the
     /// graceful-summary failure paths so all of them carry one code and one message.
     fn stop(self) -> TurnStop {
-        TurnStop::close_out(TurnStopCode::MaxIterations, self.explanation())
+        let code = if matches!(self, Self::LoopDetected) {
+            TurnStopCode::LoopDetector
+        } else {
+            TurnStopCode::MaxIterations
+        };
+        TurnStop::close_out(code, self.explanation())
     }
 }
 
@@ -166,8 +173,13 @@ pub(crate) async fn finish_after_max_iterations(
         ),
         None => (model_provider, provider_name, model, dispatch_model),
     };
+    let closeout_instructions = if matches!(limit, CompletionLimit::LoopDetected) {
+        "Do not retry tools or claim unverified success. Distinguish completed actions with evidence, failed attempts, and pending work. Explain the blocker and the next safe step."
+    } else {
+        ""
+    };
     let summary_prompt = ChatMessage::user(format!(
-        "{exhaustion}. Please provide your best answer based on the work completed so far. \
+        "{exhaustion}. {closeout_instructions} Please provide your best answer based on the work completed so far. \
          Summarize what you accomplished and what remains to be done."
     ));
     let summary_prompt_mirror = summary_prompt.clone();
@@ -533,6 +545,7 @@ pub(crate) async fn finish_after_max_iterations(
         CompletionLimit::ExecutionTree => {
             crate::i18n::get_required_cli_string("turn-execution-tree-budget-reached")
         }
+        CompletionLimit::LoopDetected => crate::i18n::get_required_cli_string("turn-loop-detected"),
     };
     let segment = format!("{display_text}\n\n{stop_reason}");
     // This summary is the turn's only visible output on the max-iteration

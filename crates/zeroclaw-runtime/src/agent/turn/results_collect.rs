@@ -38,6 +38,7 @@ pub(crate) struct CollectedResults {
     pub(crate) tool_results: String,
     /// Concatenated non-ignored outputs feeding the identical-output hash.
     pub(crate) detection_relevant_output: String,
+    pub(crate) loop_stopped: bool,
 }
 
 /// Collect this round's tool results (upstream loop body, results-collection
@@ -61,6 +62,7 @@ pub(crate) fn collect_tool_results(
     let mut tool_results = String::new();
     let mut individual_results: Vec<ToolRoundResult> = Vec::new();
     let mut detection_relevant_output = String::new();
+    let mut loop_stopped = false;
     // Use enumerate *before* filter_map so result_index stays aligned with
     // tool_calls even when some ordered_results entries are None.
     for (result_index, (tool_name, tool_call_id, outcome)) in ordered_results
@@ -77,11 +79,8 @@ pub(crate) fn collect_tool_results(
                 .get(result_index)
                 .map(|c| &c.arguments)
                 .unwrap_or(&serde_json::Value::Null);
-            let det_result = if outcome.success {
-                loop_detector.record(&tool_name, args, &outcome.output)
-            } else {
-                crate::agent::loop_detector::LoopDetectionResult::Ok
-            };
+            // Failed attempts also form retry loops; do not grant failures unlimited retries.
+            let det_result = loop_detector.record(&tool_name, args, &outcome.output);
             match det_result {
                 crate::agent::loop_detector::LoopDetectionResult::Ok => {}
                 crate::agent::loop_detector::LoopDetectionResult::Warning(ref msg) => {
@@ -108,7 +107,8 @@ pub(crate) fn collect_tool_results(
                             ),
                         "loop detector blocked tool call"
                     );
-                    // Replace the tool output with the block message.
+                    loop_stopped = true;
+                    // Retain the actual outcome for the tools-free closeout.
                     // We still continue the loop so the LLM sees the block feedback.
                     append_or_merge_system_message(
                         history,
@@ -130,11 +130,8 @@ pub(crate) fn collect_tool_results(
                             })),
                         "loop_detector_circuit_breaker"
                     );
-                    return Err(TurnStop::close_out(
-                        TurnStopCode::LoopDetector,
-                        format!("Agent loop aborted by loop detector: {msg}"),
-                    )
-                    .into());
+                    loop_stopped = true;
+                    append_or_merge_system_message(history, format!("[Loop Detection] {msg}"));
                 }
             }
         }
@@ -192,6 +189,7 @@ pub(crate) fn collect_tool_results(
         individual_results,
         tool_results,
         detection_relevant_output,
+        loop_stopped,
     })
 }
 
@@ -539,20 +537,10 @@ mod tests {
             0,
             "turn-test",
         );
-        let err = match err {
-            Ok(_) => panic!("identical tool+args must break the turn"),
-            Err(e) => e,
-        };
-
-        assert_eq!(
-            turn_stop(&err).expect("break must be typed").code,
-            TurnStopCode::LoopDetector
-        );
-        assert!(
-            err.to_string()
-                .starts_with("Agent loop aborted by loop detector:"),
-            "the message must not change: {err}"
-        );
+        let collected = err.expect("completed tool outcomes must be retained");
+        assert!(collected.loop_stopped);
+        assert_eq!(collected.individual_results.len(), 6);
+        assert!(collected.tool_results.contains("same"));
     }
 
     #[test]
@@ -573,5 +561,34 @@ mod tests {
     #[test]
     fn a_plain_error_stays_untyped_for_the_string_fallback() {
         assert!(turn_stop(&anyhow::Error::msg("upstream returned 500")).is_none());
+    }
+    #[test]
+    fn repeated_failures_close_out_and_retain_every_result() {
+        let calls: Vec<_> = (0..4)
+            .map(|_| ParsedToolCall {
+                name: "shell".into(),
+                arguments: serde_json::json!({"command":"ssh target hostname"}),
+                tool_call_id: None,
+            })
+            .collect();
+        let outcomes = (0..4)
+            .map(|_| Some(("shell".into(), None, outcome("connection refused", false))))
+            .collect();
+        let collected = collect_tool_results(
+            outcomes,
+            &calls,
+            &mut Vec::new(),
+            &mut LoopDetector::new(Default::default()),
+            &HashSet::new(),
+            10000,
+            None,
+            "test",
+            0,
+            "turn-test",
+        )
+        .expect("failed outcomes preserved");
+        assert!(collected.loop_stopped);
+        assert_eq!(collected.individual_results.len(), 4);
+        assert!(collected.detection_relevant_output.is_empty());
     }
 }
