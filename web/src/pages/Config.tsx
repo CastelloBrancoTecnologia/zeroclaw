@@ -264,6 +264,13 @@ export default function Config() {
       // Pre-scoped operator-bind tab on a pairing channel's own page, so you
       // can authorize a user (no /bind message) right where you configured it.
       const channelExtraTabs: SectionTabSpec[] = [];
+      if (activeSection.key === "channels" && typeParam === "xmpp") {
+        channelExtraTabs.push({
+          key: "allowed_users",
+          label: t("xmpp.allowed_users"),
+          render: () => <XmppAllowedUsers channelAlias={aliasParam} onSaved={fetchDrift} />,
+        });
+      }
       if (
         activeSection.key === "channels" &&
         ["telegram", "wechat", "line"].includes(typeParam)
@@ -1069,6 +1076,32 @@ function WireTabForm({
       drift={drift}
     />
   );
+}
+
+/** Edit the canonical peer policy associated with this XMPP alias. */
+function XmppAllowedUsers({ channelAlias, onSaved }: { channelAlias: string; onSaved: () => void }) {
+  const [groups, setGroups] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const { keys } = await getMapKeys("peer_groups");
+      const matching: string[] = [];
+      for (const key of keys) {
+        const { entries } = await listProps(`peer_groups.${key}`);
+        const channel = entries.find(e => e.path === `peer_groups.${key}.channel`)?.value;
+        if (channel === "xmpp" || channel === `xmpp.${channelAlias}`) matching.push(key);
+      }
+      if (!cancelled) setGroups(matching);
+    })().catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
+    return () => { cancelled = true; };
+  }, [channelAlias]);
+  return <div className="flex flex-col gap-4">
+    <p>{t("xmpp.allowed_users_help")}</p>
+    {error && <p role="alert">{error}</p>}
+    {groups.map(group => <FieldForm key={group} prefix={`peer_groups.${group}`} title={group} onSaved={onSaved} />)}
+    <Link to="/config/peer_groups">{t("xmpp.manage_peer_groups")}</Link>
+  </div>;
 }
 
 /**
