@@ -460,8 +460,7 @@ impl Tool for SendViaTool {
                 success: false,
                 output: ToolOutput::json(json!({
                     "status": "rejected",
-                    "reason": "No active channel reply to redirect. To start or resume a conversation, \
-                               call send_via with both `target` and a non-empty `body`."
+                    "reason": crate::i18n::get_required_tool_string("tool-send-via-error-no-active-reply")
                 })),
                 error: None,
             });
