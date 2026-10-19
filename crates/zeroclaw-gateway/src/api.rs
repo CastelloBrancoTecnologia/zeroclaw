@@ -14,7 +14,15 @@ use zeroclaw_config::schema::{ChannelAliasInfo, Config};
 use zeroclaw_memory::MemoryEntry;
 
 const MEMORY_API_CONTENT_MAX_CHARS: usize = 4096;
+#[cfg(not(test))]
 const OPENROUTER_CREDITS_URL: &str = "https://openrouter.ai/api/v1/credits";
+
+// Per-test upstream injection reaches the public HTTP handler without adding
+// a production URL setting, global mutable test state or an auth bypass.
+#[cfg(test)]
+tokio::task_local! {
+    static OPENROUTER_CREDITS_TEST_URL: String;
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
@@ -1409,8 +1417,15 @@ pub async fn handle_api_openrouter_credits(
         }
     };
 
+    #[cfg(test)]
+    let credits_url = OPENROUTER_CREDITS_TEST_URL
+        .try_with(Clone::clone)
+        .expect("credits tests must scope a controlled upstream");
+    #[cfg(not(test))]
+    let credits_url = OPENROUTER_CREDITS_URL;
+
     let response = match client
-        .get(OPENROUTER_CREDITS_URL)
+        .get(credits_url)
         .bearer_auth(management_key)
         .send()
         .await
@@ -2604,6 +2619,327 @@ pub(crate) mod tests {
             active_openrouter_management_key(&config),
             Some(("second".into(), "key-second".into()))
         );
+    }
+
+    fn openrouter_credits_config() -> Config {
+        let mut config = Config::default();
+        config.providers.models.openrouter.insert(
+            "primary".into(),
+            zeroclaw_config::schema::OpenRouterModelProviderConfig {
+                base: zeroclaw_config::schema::ModelProviderConfig {
+                    api_key: Some("inference-fixture".into()),
+                    ..Default::default()
+                },
+                management_api_key: Some("management-fixture".into()),
+                credit_balance_enabled: true,
+            },
+        );
+        config.agents.insert(
+            "assistant".into(),
+            zeroclaw_config::schema::AliasedAgentConfig {
+                model_provider: "openrouter.primary".into(),
+                ..Default::default()
+            },
+        );
+        config
+    }
+
+    async fn request_openrouter_credits(
+        config: Config,
+        url: String,
+        token: Option<&str>,
+    ) -> axum::response::Response {
+        use tower::ServiceExt;
+        let mut state = test_state(config);
+        state.pairing = Arc::new(PairingGuard::new(
+            true,
+            &["gateway-fixture".to_string()],
+            zeroclaw_config::pairing::PairingCodePolicy::default(),
+        ));
+        let app = axum::Router::new()
+            .route(
+                "/api/openrouter/credits",
+                axum::routing::get(handle_api_openrouter_credits),
+            )
+            .with_state(state);
+        let mut request = axum::http::Request::builder().uri("/api/openrouter/credits");
+        if let Some(token) = token {
+            request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        OPENROUTER_CREDITS_TEST_URL
+            .scope(
+                url,
+                app.oneshot(request.body(axum::body::Body::empty()).expect("request")),
+            )
+            .await
+            .expect("HTTP response")
+    }
+
+    fn credits_payload() -> serde_json::Value {
+        serde_json::json!({"data":{"total_credits":40.0,"total_usage":7.5}})
+    }
+
+    #[tokio::test]
+    async fn openrouter_credits_endpoint_requires_valid_bearer_before_upstream_access() {
+        let server = wiremock::MockServer::start().await;
+        for token in [None, Some("wrong-token")] {
+            let response = request_openrouter_credits(
+                openrouter_credits_config(),
+                format!("{}/credits", server.uri()),
+                token,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn openrouter_credits_endpoint_maps_success_and_keeps_credentials_private() {
+        use wiremock::{
+            Mock, ResponseTemplate,
+            matchers::{header as match_header, method, path},
+        };
+        let server = wiremock::MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/credits"))
+            .and(match_header("authorization", "Bearer management-fixture"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(credits_payload()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let response = request_openrouter_credits(
+            openrouter_credits_config(),
+            format!("{}/credits", server.uri()),
+            Some("gateway-fixture"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await,
+            serde_json::json!({
+                "provider_alias":"primary","total_credits":40.0,"total_usage":7.5,"remaining_credits":32.5
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn openrouter_credits_endpoint_without_keys_is_empty_and_does_not_call_upstream() {
+        let server = wiremock::MockServer::start().await;
+        let response = request_openrouter_credits(
+            Config::default(),
+            format!("{}/credits", server.uri()),
+            Some("gateway-fixture"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .expect("body")
+                .to_bytes()
+                .is_empty()
+        );
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn openrouter_credits_endpoint_hides_upstream_http_failures() {
+        use wiremock::{Mock, ResponseTemplate, matchers::method};
+        for status in [401, 429, 500] {
+            let server = wiremock::MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .set_body_string("upstream detail must not cross the API boundary"),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let response = request_openrouter_credits(
+                openrouter_credits_config(),
+                format!("{}/credits", server.uri()),
+                Some("gateway-fixture"),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            assert!(
+                response
+                    .into_body()
+                    .collect()
+                    .await
+                    .expect("body")
+                    .to_bytes()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn openrouter_credits_endpoint_hides_invalid_upstream_json() {
+        use wiremock::{Mock, ResponseTemplate, matchers::method};
+        for body in [
+            "not-json",
+            r#"{"data":{"total_credits":"invalid","total_usage":0}}"#,
+            r#"{"other":1}"#,
+        ] {
+            let server = wiremock::MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json"))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let response = request_openrouter_credits(
+                openrouter_credits_config(),
+                format!("{}/credits", server.uri()),
+                Some("gateway-fixture"),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            assert!(
+                response
+                    .into_body()
+                    .collect()
+                    .await
+                    .expect("body")
+                    .to_bytes()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn openrouter_credits_endpoint_hides_transport_errors() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback port");
+        let address = listener.local_addr().expect("address");
+        drop(listener);
+        let response = request_openrouter_credits(
+            openrouter_credits_config(),
+            format!("http://{address}/credits"),
+            Some("gateway-fixture"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn openrouter_credits_endpoint_uses_service_scoped_http_proxy() {
+        use wiremock::{
+            Mock, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let proxy = wiremock::MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/credits"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(credits_payload()))
+            .expect(1)
+            .mount(&proxy)
+            .await;
+        let mut config = openrouter_credits_config();
+        config.proxy = zeroclaw_config::schema::ProxyConfig {
+            enabled: true,
+            http_proxy: Some(proxy.uri()),
+            scope: zeroclaw_config::schema::ProxyScope::Services,
+            services: vec!["model_provider.openrouter".into()],
+            ..Default::default()
+        };
+        let response = request_openrouter_credits(
+            config,
+            "http://openrouter.invalid/api/v1/credits".into(),
+            Some("gateway-fixture"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["remaining_credits"], 32.5);
+    }
+
+    #[tokio::test]
+    async fn openrouter_credits_endpoint_uses_https_proxy_without_direct_fallback() {
+        use wiremock::{Mock, ResponseTemplate, matchers::method};
+        let proxy = wiremock::MockServer::start().await;
+        Mock::given(method("CONNECT"))
+            .respond_with(ResponseTemplate::new(502))
+            .expect(1)
+            .mount(&proxy)
+            .await;
+        let mut config = openrouter_credits_config();
+        config.proxy = zeroclaw_config::schema::ProxyConfig {
+            enabled: true,
+            https_proxy: Some(proxy.uri()),
+            ..Default::default()
+        };
+        let response = request_openrouter_credits(
+            config,
+            "https://openrouter.invalid/api/v1/credits".into(),
+            Some("gateway-fixture"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .expect("body")
+                .to_bytes()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn openrouter_credits_endpoint_invalid_proxy_never_falls_back_to_direct() {
+        let upstream = wiremock::MockServer::start().await;
+        let mut config = openrouter_credits_config();
+        config.proxy = zeroclaw_config::schema::ProxyConfig {
+            enabled: true,
+            all_proxy: Some("http://[invalid".into()),
+            ..Default::default()
+        };
+        let response = request_openrouter_credits(
+            config,
+            format!("{}/credits", upstream.uri()),
+            Some("gateway-fixture"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(
+            upstream
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn openrouter_credits_http_disabled_returns_no_content_without_upstream() {
+        let upstream = wiremock::MockServer::start().await;
+        let mut config = openrouter_credits_config();
+        config
+            .providers
+            .models
+            .openrouter
+            .get_mut("primary")
+            .unwrap()
+            .credit_balance_enabled = false;
+        let response =
+            request_openrouter_credits(config, upstream.uri(), Some("gateway-fixture")).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(upstream.received_requests().await.unwrap().is_empty());
     }
 
     #[derive(Default)]
