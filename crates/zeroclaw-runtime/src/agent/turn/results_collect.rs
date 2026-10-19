@@ -107,7 +107,13 @@ pub(crate) fn collect_tool_results(
                             ),
                         "loop detector blocked tool call"
                     );
-                    loop_stopped = true;
+                    // Equal output from different arguments is ambiguous (empty
+                    // searches and successful silent commands). Keep that advisory;
+                    // only an exact-repeat preflight refusal ends the tool phase.
+                    loop_stopped |= matches!(
+                        loop_detector.check_before_call(&tool_name, args),
+                        crate::agent::loop_detector::LoopDetectionResult::Block(_)
+                    );
                     // Retain the actual outcome for the tools-free closeout.
                     // We still continue the loop so the LLM sees the block feedback.
                     append_or_merge_system_message(
@@ -590,5 +596,36 @@ mod tests {
         assert!(collected.loop_stopped);
         assert_eq!(collected.individual_results.len(), 4);
         assert!(collected.detection_relevant_output.is_empty());
+    }
+    #[test]
+    fn silent_distinct_commands_are_advisory_not_a_terminal_loop() {
+        let calls: Vec<_> = (0..8)
+            .map(|index| ParsedToolCall {
+                name: "shell".into(),
+                arguments: serde_json::json!({"command":format!("check-{index}")}),
+                tool_call_id: None,
+            })
+            .collect();
+        let outcomes = (0..8)
+            .map(|_| Some(("shell".into(), None, outcome("(no output)", true))))
+            .collect();
+        let collected = collect_tool_results(
+            outcomes,
+            &calls,
+            &mut Vec::new(),
+            &mut LoopDetector::new(Default::default()),
+            &HashSet::new(),
+            10000,
+            None,
+            "test",
+            0,
+            "turn-test",
+        )
+        .expect("silent results retained");
+        assert!(
+            !collected.loop_stopped,
+            "different commands with equal output do not prove a loop"
+        );
+        assert_eq!(collected.individual_results.len(), 8);
     }
 }
