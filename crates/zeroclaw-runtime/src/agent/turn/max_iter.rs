@@ -603,10 +603,14 @@ mod graceful_summary_metering_tests {
 
         async fn chat(
             &self,
-            _request: ChatRequest<'_>,
+            request: ChatRequest<'_>,
             _model: &str,
             _temperature: Option<f64>,
         ) -> anyhow::Result<ChatResponse> {
+            assert!(
+                request.tools.is_none(),
+                "closeout must never dispatch tools"
+            );
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(ChatResponse {
                 text: Some("wrap-up summary".to_string()),
@@ -671,11 +675,48 @@ mod graceful_summary_metering_tests {
         }
     }
 
+    #[tokio::test]
+    async fn loop_closeout_uses_one_tools_free_summary_with_visible_stop_reason() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = CountingUsageProvider {
+            calls: Arc::clone(&calls),
+        };
+        let result = run_summary_with_limit(
+            &provider,
+            String::new(),
+            None,
+            None,
+            CompletionLimit::LoopDetected,
+        )
+        .await
+        .expect("loop closes out gracefully");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(result.contains("wrap-up summary"));
+        assert!(result.contains(&crate::i18n::get_required_cli_string("turn-loop-detected")));
+    }
+
     async fn run_summary_with_events(
         provider: &dyn ModelProvider,
         accumulated_display_text: String,
         event_tx: Option<&Sender<TurnEvent>>,
         on_delta: Option<&Sender<StreamDelta>>,
+    ) -> anyhow::Result<String> {
+        run_summary_with_limit(
+            provider,
+            accumulated_display_text,
+            event_tx,
+            on_delta,
+            CompletionLimit::LocalIterations(2),
+        )
+        .await
+    }
+
+    async fn run_summary_with_limit(
+        provider: &dyn ModelProvider,
+        accumulated_display_text: String,
+        event_tx: Option<&Sender<TurnEvent>>,
+        on_delta: Option<&Sender<StreamDelta>>,
+        limit: CompletionLimit,
     ) -> anyhow::Result<String> {
         let mut history = vec![ChatMessage::user("do the work")];
         let pacing = PacingConfig::default();
@@ -691,7 +732,7 @@ mod graceful_summary_metering_tests {
             None,
             &pacing,
             None,
-            CompletionLimit::LocalIterations(2),
+            limit,
             accumulated_display_text,
             "trace-req-test",
             &knobs,
@@ -2246,6 +2287,10 @@ mod tests {
             TurnStopCode::MaxIterations
         );
 
+        assert_eq!(
+            CompletionLimit::LoopDetected.stop().code,
+            TurnStopCode::LoopDetector
+        );
         let tree = CompletionLimit::ExecutionTree.stop();
         assert_eq!(tree.code, TurnStopCode::MaxIterations);
         assert_eq!(
