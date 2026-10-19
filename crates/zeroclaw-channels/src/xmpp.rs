@@ -148,9 +148,8 @@ impl XmppChannel {
                             *self.outbound.lock().await = Some(outbound.clone());
                         }
                         "message" => {
-                            if let Some(message) = self.inbound(event) {
-                                if tx.send(message).await.is_err() { return Ok(()); }
-                            }
+                            if let Some(message) = self.inbound(event)
+                                && tx.send(message).await.is_err() { return Ok(()); }
                         }
                         "sent" => { if let Some(waiter) = pending.remove(&event.id) { let _ = waiter.send(event.ok); } }
                         "fatal" => bail!("XMPP bridge failed; check dependencies, TLS, credentials and device trust"),

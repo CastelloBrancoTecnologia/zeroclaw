@@ -35,9 +35,10 @@ For TLS-only deployments install only `slixmpp==1.12.0`.
    client authentication mode.
 3. In **Advanced**, set `python_path` to the venv interpreter, and optionally
    choose a resource, message-size limit, connection deadline and OMEMO.
-4. In **Allowed users**, edit the existing matching peer groups, or follow
-   the link to create one. Set its channel to `xmpp.<alias>` and put bare JIDs
-   in `external_peers`. `ignore` entries override grants, including wildcards.
+4. In **Allowed users**, create an authorization policy for this channel or
+   edit an existing matching policy. The create button makes a canonical peer
+   group scoped to `xmpp.<alias>`. Put bare JIDs in `external_peers`; `ignore`
+   entries override grants, including wildcards.
    Empty authorization denies everyone; there is no open registration or
    automatic contact approval. This reuses canonical peer-group policy rather
    than storing a second, conflicting transport allowlist.
