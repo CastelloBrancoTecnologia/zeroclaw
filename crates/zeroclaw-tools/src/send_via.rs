@@ -51,8 +51,8 @@ fn has_turn_routing() -> bool {
         .unwrap_or(false)
 }
 
-fn description_for_current_turn() -> &'static str {
-    if !has_turn_routing() {
+fn description_for_routing(routing_available: bool) -> &'static str {
+    if !routing_available {
         return "Send a message immediately to a configured channel peer. Both `target` \
                     and a non-empty `body` are required: this task has no active channel \
                     reply to redirect. Sending starts or resumes the recipient's conversation; \
@@ -87,7 +87,7 @@ fn description_for_current_turn() -> &'static str {
          the active agent belongs to. `modality` defaults to the peer group's output_modality."
 }
 
-fn schema_for_current_turn() -> serde_json::Value {
+fn schema_for_routing(routing_available: bool) -> serde_json::Value {
     let mut schema = json!({
         "type": "object",
         "properties": {
@@ -108,7 +108,7 @@ fn schema_for_current_turn() -> serde_json::Value {
             }
         }
     });
-    if !has_turn_routing() {
+    if !routing_available {
         schema["required"] = json!(["target", "body"]);
         schema["properties"]["target"]["description"] =
             json!("Required destination: a configured channel alias or authorized peer group.");
@@ -117,6 +117,14 @@ fn schema_for_current_turn() -> serde_json::Value {
         schema["properties"]["body"]["minLength"] = json!(1);
     }
     schema
+}
+
+fn description_for_current_turn() -> &'static str {
+    description_for_routing(has_turn_routing())
+}
+
+fn schema_for_current_turn() -> serde_json::Value {
+    schema_for_routing(has_turn_routing())
 }
 
 /// Re-project deferred discovery at read time, without changing a catalog shared
@@ -177,6 +185,19 @@ pub struct SendViaTool {
 }
 
 impl SendViaTool {
+    /// Project static channel-prompt metadata. The channel owner knows that
+    /// its real turns install a reply consumer; this does not install a fake
+    /// TURN_ROUTING handle or change execution/discovery for headless tasks.
+    pub fn channel_prompt_spec(spec: &ToolSpec) -> Option<ToolSpec> {
+        if spec.name != "send_via" {
+            return None;
+        }
+        let mut projected = spec.clone();
+        projected.description = description_for_routing(true).to_string();
+        projected.parameters = Arc::new(schema_for_routing(true));
+        Some(projected)
+    }
+
     pub fn new(
         security: Arc<SecurityPolicy>,
         channel_map: PerToolChannelHandle,
