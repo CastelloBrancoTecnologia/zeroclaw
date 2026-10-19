@@ -98,6 +98,32 @@ async def test(args):
         assert (await alice.event('message'))['body']=='encrypted-reply'
         print('PASS OMEMO authenticated encryption both ways and persistent identity across restart')
 
+        # Cache an explicit distrust decision, then add the pin and receive
+        # before sending anything. A first outbound message must not be needed
+        # to activate trust in an already-known device.
+        await bot.close()
+        bot=await start('bot',omemo=True,pins=[],state=old_states[0])
+        await bot.event('online')
+        await bot.send('alice@example.test','seed-distrust',expected=False)
+        await bot.close()
+        bot=await start('bot',omemo=True,pins=pins,state=old_states[0])
+        await bot.event('online')
+        await alice.send('bot@example.test','first-inbound-after-pin-added')
+        assert (await bot.event('message'))['body']=='first-inbound-after-pin-added'
+        print('PASS newly pinned cached-distrusted device receives before first outbound')
+
+        await bot.close()
+        bot=await start('bot',omemo=True,pins=[],state=old_states[0])
+        await bot.event('online')
+        await alice.send('bot@example.test','revoked-inbound')
+        try:await bot.event('message',2)
+        except asyncio.TimeoutError:pass
+        else:raise AssertionError('Removed pin still admitted inbound')
+        await bot.close()
+        bot=await start('bot',omemo=True,pins=pins,state=old_states[0])
+        await bot.event('online')
+        print('PASS removed pin blocks inbound before first outbound')
+
         plain=await start('mallory');await plain.event('online')
         await plain.send('bot@example.test','must-not-enter-agent')
         try:await bot.event('message',2)

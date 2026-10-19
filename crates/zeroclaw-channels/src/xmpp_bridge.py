@@ -177,7 +177,16 @@ async def main(setup):
                 if not self["xep_0384"].is_encrypted(stanza):
                     return
                 try:
-                    stanza, device = await self["xep_0384"].decrypt_message(stanza)
+                    plugin = self["xep_0384"]
+                    manager = await plugin.get_session_manager()
+                    # Previously distrusted devices remain distrusted in storage
+                    # after a pin is added. Reconcile before decryption, which
+                    # otherwise rejects them before the fingerprint check below.
+                    for known in await manager.get_device_information(from_jid):
+                        trusted = device_is_pinned(known)
+                        await manager.set_trust(known.bare_jid, known.identity_key,
+                                                TrustLevel.TRUSTED.value if trusted else TrustLevel.DISTRUSTED.value)
+                    stanza, device = await plugin.decrypt_message(stanza)
                     if device.bare_jid != from_jid or not device_is_pinned(device):
                         return
                     encrypted = True
