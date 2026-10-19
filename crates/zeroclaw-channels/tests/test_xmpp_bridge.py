@@ -1,5 +1,7 @@
 """Transport helper unit tests; run with the XMPP requirements installed."""
 import importlib.util
+import io
+from unittest.mock import patch
 import json
 from pathlib import Path
 import tempfile
@@ -12,6 +14,22 @@ spec.loader.exec_module(bridge)
 
 
 class BridgeTests(unittest.TestCase):
+    def test_maximum_unicode_message_fits_worker_frame_and_next_frame_survives(self):
+        for character in ["\U0001f680", "\x01"]:
+            body = character * 64000
+            raw = io.BytesIO()
+            # The process locale must not determine the protocol encoding.
+            output = io.TextIOWrapper(raw, encoding="ascii")
+            with patch.object(bridge.sys, "stdout", output):
+                bridge.emit("message", id="one", **{"from": "alice@example.org"},
+                            body=body, encrypted=True)
+                bridge.emit("ready")
+            frames = raw.getvalue().splitlines()
+            self.assertEqual(len(frames), 2)
+            self.assertLess(len(frames[0]), 512 * 1024)
+            self.assertEqual(json.loads(frames[0])["body"], body)
+            self.assertEqual(json.loads(frames[1])["type"], "ready")
+
     def test_grouped_fingerprints_and_invalid_entries(self):
         fingerprint='0123456789abcdef'*4
         grouped=' '.join(fingerprint[i:i+8] for i in range(0,64,8))

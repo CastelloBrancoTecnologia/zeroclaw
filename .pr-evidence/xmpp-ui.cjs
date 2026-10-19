@@ -32,7 +32,8 @@ const sections=[{key:'channels',label:'Channels',help:'Messaging channels',has_p
   await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(data)});
  });
  page=await ctx.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
- await page.goto((process.env.XMPP_UI_URL || 'http://127.0.0.1:5178')+'/config/channels/xmpp/private');
+ // This fixture only drives its local development server, never an env-supplied URL.
+ await page.goto('http://127.0.0.1:5178/config/channels/xmpp/private');
  await page.locator('[id="'+prefix+'.username"]').waitFor({timeout:90000});
  fs.mkdirSync(out,{recursive:true});
  await page.screenshot({path:path.join(out,'xmpp-connection-desktop.png')});

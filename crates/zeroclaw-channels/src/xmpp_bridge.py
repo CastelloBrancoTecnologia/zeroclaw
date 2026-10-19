@@ -15,7 +15,11 @@ import uuid
 
 
 def emit(kind, **fields):
-    print(json.dumps({"type": kind, **fields}, ensure_ascii=True), flush=True)
+    # Write UTF-8 explicitly: ASCII escaping can exceed the Rust frame bound
+    # for an otherwise valid maximum-length Unicode message.
+    frame = json.dumps({"type": kind, **fields}, ensure_ascii=False) + "\n"
+    sys.stdout.buffer.write(frame.encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 
 def private_database(directory):

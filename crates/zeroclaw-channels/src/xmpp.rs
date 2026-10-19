@@ -187,6 +187,10 @@ impl Channel for XmppChannel {
     fn name(&self) -> &str {
         "xmpp"
     }
+    // The bridge accepts only one-to-one chat/normal stanzas, never MUC.
+    fn is_direct_message(&self, _msg: &ChannelMessage) -> bool {
+        true
+    }
     fn self_handle(&self) -> Option<String> {
         Some(self.config.username.clone())
     }
@@ -292,6 +296,7 @@ mod tests {
             .expect("authorized encrypted message");
         assert_eq!(message.channel_alias.as_deref(), Some("private"));
         assert_eq!(message.sender, message.reply_target);
+        assert!(channel.is_direct_message(&message));
     }
     #[tokio::test]
     async fn offline_or_unauthorized_send_fails_without_starting_transport() {
