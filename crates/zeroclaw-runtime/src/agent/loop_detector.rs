@@ -182,8 +182,9 @@ impl LoopDetector {
             .take_while(|call| call.name == name && call.args_hash == hash)
             .count();
         if repeats >= self.config.max_repeats {
-            LoopDetectionResult::Block(format!(
-                "Refused repeated tool '{name}' before execution after {repeats} identical calls. Stop retrying and report completed, failed and pending work."
+            LoopDetectionResult::Block(crate::i18n::get_required_cli_string_with_args(
+                "turn-loop-repeat-refused",
+                &[("tool", name), ("repeats", &repeats.to_string())],
             ))
         } else {
             LoopDetectionResult::Ok

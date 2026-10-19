@@ -20,6 +20,9 @@ use zeroclaw_api::turn_stop::{TurnStop, TurnStopCode};
 use zeroclaw_tool_call_parser::{ParsedToolCall, canonicalize_json_for_tool_signature};
 
 pub(crate) struct PreparedToolCalls {
+    /// Canonical fact created by the preflight gate. Result collection may
+    /// change detector history, but cannot undo an already refused dispatch.
+    pub(crate) preflight_loop_stopped: bool,
     pub(crate) ordered_results: Vec<Option<(String, Option<String>, ToolExecutionOutcome)>>,
     pub(crate) executable_indices: Vec<usize>,
     pub(crate) executable_calls: Vec<ParsedToolCall>,
@@ -140,6 +143,7 @@ pub(crate) async fn prepare_tool_calls(
 ) -> Result<PreparedToolCalls> {
     let mut ordered_results: Vec<Option<(String, Option<String>, ToolExecutionOutcome)>> =
         (0..tool_calls.len()).map(|_| None).collect();
+    let mut preflight_loop_stopped = false;
     let mut executable_indices: Vec<usize> = Vec::new();
     let mut executable_calls: Vec<ParsedToolCall> = Vec::new();
     let mut executable_stream_calls = Vec::new();
@@ -369,6 +373,7 @@ pub(crate) async fn prepare_tool_calls(
             if let crate::agent::loop_detector::LoopDetectionResult::Block(message) =
                 preview.check_before_call(&tool_name, &call.arguments)
             {
+                preflight_loop_stopped = true;
                 abandon_prepared_context(ctx, &hook_context, &tool_name).await;
                 let outcome = ToolExecutionOutcome {
                     output: message.clone(),
@@ -452,6 +457,7 @@ pub(crate) async fn prepare_tool_calls(
     }
 
     Ok(PreparedToolCalls {
+        preflight_loop_stopped,
         ordered_results,
         executable_indices,
         executable_calls,
@@ -1339,6 +1345,7 @@ mod tests {
         )
         .await
         .expect("bounded batch prepares");
+        assert!(prepared.preflight_loop_stopped);
         assert_eq!(prepared.executable_calls.len(), 3);
         assert!(!prepared.ordered_results[3].as_ref().unwrap().2.success);
         let events = events.lock().unwrap();
