@@ -390,7 +390,7 @@ mod tests {
         for locale in ["es", "fr", "ja", "zh-CN"] {
             let sources = CliFtlSources {
                 locale: locale.to_string(),
-                builtin: builtin_cli_ftl_source(locale),
+                builtin: Some("channel-runtime-request-timeout = Legacy built-in retry suggestion"),
                 disk: Some("channel-runtime-request-timeout = Legacy retry suggestion".to_string()),
             };
             let message = format_cli_string_with_args(&sources, key, &[]).unwrap();
@@ -2771,6 +2771,12 @@ mod tests {
     #[test]
     fn channel_runtime_committed_cli_catalogs_format_from_fluent() {
         let cases = [
+            ("channel-runtime-task-deadline", &[][..], [].as_slice()),
+            (
+                "channel-runtime-still-working",
+                &[("seconds", "60")][..],
+                ["60"].as_slice(),
+            ),
             (
                 "channel-runtime-malformed-tool-output",
                 &[][..],
@@ -2811,7 +2817,6 @@ mod tests {
                 ]
                 .as_slice(),
             ),
-            ("channel-runtime-request-timeout", &[][..], [].as_slice()),
             (
                 "channel-runtime-no-reply-refused",
                 &[][..],

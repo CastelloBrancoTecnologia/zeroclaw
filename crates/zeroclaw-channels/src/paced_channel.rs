@@ -840,7 +840,7 @@ mod tests {
             .await
             .unwrap();
         let notice_channel = paced.clone();
-        let notice = tokio::spawn(async move {
+        let notice = zeroclaw_spawn::spawn!(async move {
             scope_progress_send(notice_channel.send(&SendMessage::new("progress", "peer"))).await
         });
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -891,7 +891,7 @@ mod tests {
             .is_err()
         );
         let ordinary_channel = paced.clone();
-        let ordinary = tokio::spawn(async move {
+        let ordinary = zeroclaw_spawn::spawn!(async move {
             ordinary_channel
                 .send(&SendMessage::new("ordinary", "peer"))
                 .await
