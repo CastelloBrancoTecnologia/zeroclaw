@@ -1655,3 +1655,8 @@ skill-http-request-timeout = HTTP request timed out
 turn-loop-detected = Repeated tool calls were stopped. Completed work is retained; unresolved actions remain pending.
 
 turn-loop-repeat-refused = Refused repeated tool { $tool } before execution after { $repeats } identical calls. Stop retrying and report completed, failed and pending work.
+# Result-aware Agent loop recovery
+turn-repeated-success-advisory = The same tool call returned the same successful result repeatedly. Reconsider whether another call will help. Polling may continue when needed.
+turn-repeated-failure-recovery = The same tool call failed with the same result repeatedly. Change the approach or explain the blocker. One further identical retry is available before this turn stops.
+turn-repeated-failure-exhausted = The recovery retry failed with the same result, so this turn has stopped. Completed tool results have been preserved. You can retry in a new turn.
+turn-repeated-failure-retry-skipped = Skipped an additional identical call in this recovery batch. Only one recovery retry is available.
