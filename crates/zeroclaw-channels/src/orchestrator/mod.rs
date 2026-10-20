@@ -55710,7 +55710,7 @@ Done."#;
 
     #[test]
     fn extract_current_turn_tool_messages_returns_intermediate_messages() {
-        let history = vec![
+        let history = [
             ChatMessage::system("sys"),
             ChatMessage::user("older msg"),
             ChatMessage::assistant("older reply"),
@@ -55734,7 +55734,7 @@ Done."#;
 
     #[test]
     fn extract_current_turn_tool_messages_empty_when_no_tools() {
-        let history = vec![
+        let history = [
             ChatMessage::user("hello"),
             ChatMessage::assistant("Hi there!"),
         ];
@@ -55750,7 +55750,7 @@ Done."#;
 
     #[test]
     fn extract_current_turn_tool_messages_multiple_tool_rounds() {
-        let history = vec![
+        let history = [
             ChatMessage::user("do two things"),
             ChatMessage::assistant("{\"tool_call\": \"read_skill\"}"),
             ChatMessage::tool("skill content"),
