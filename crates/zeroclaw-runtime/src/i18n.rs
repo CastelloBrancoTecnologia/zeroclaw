@@ -385,6 +385,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn task_deadline_falls_back_safely_with_legacy_translation_overrides() {
+        let key = "channel-runtime-task-deadline";
+        for locale in ["es", "fr", "ja", "zh-CN"] {
+            let sources = CliFtlSources {
+                locale: locale.to_string(),
+                builtin: builtin_cli_ftl_source(locale),
+                disk: Some("channel-runtime-request-timeout = Legacy retry suggestion".to_string()),
+            };
+            let message = format_cli_string_with_args(&sources, key, &[]).unwrap();
+            assert_eq!(
+                message,
+                "⚠️ The task reached its processing deadline. Some actions may have completed; verify their state before retrying."
+            );
+        }
+    }
+
+    #[test]
     fn english_descriptions_are_embedded() {
         let map = format_ftl_messages(include_str!("../locales/en/tools.ftl"), "en");
         assert!(map.contains_key("tool-shell"));

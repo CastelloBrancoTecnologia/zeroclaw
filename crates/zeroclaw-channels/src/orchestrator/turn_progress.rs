@@ -20,7 +20,7 @@ where
             result = &mut future => return result,
             _ = ticker.tick() => {
                 // A slow transport must not hide turn completion or hang it.
-                let notice = tokio::time::timeout(Duration::from_secs(5), notify(started.elapsed()));
+                let notice = tokio::time::timeout(Duration::from_secs(5), crate::paced_channel::scope_progress_send(notify(started.elapsed())));
                 tokio::select! {
                     biased;
                     result = &mut future => return result,

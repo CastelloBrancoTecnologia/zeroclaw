@@ -11300,7 +11300,7 @@ async fn process_channel_message_body(
                 // (RFCerror-path fix): cancel the draft, then send as
                 // text so a timeout notice is never read aloud on a voice peer.
                 let error_text = zeroclaw_runtime::i18n::get_required_cli_string(
-                    "channel-runtime-request-timeout",
+                    "channel-runtime-task-deadline",
                 );
                 if let Some(draft_id) = draft_message_id.as_deref() {
                     let _ = channel.cancel_draft(&msg.reply_target, draft_id).await;

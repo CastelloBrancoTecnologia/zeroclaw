@@ -1302,7 +1302,7 @@ channel-runtime-conversation-busy = This conversation has too many pending messa
 channel-runtime-model-empty = Model ID cannot be empty. Use `/model <model-id>`.
 channel-runtime-model-switched = Model switched to `{ $model }` (model_provider: `{ $provider }`). Context preserved.
 channel-runtime-agent-scope-rejected = Sender `{ $sender }` is not authorized for `/model --agent` on agent `{ $agent }`. Use `/model --user { $model }` for a session-only override, or ask an admin to mark a peer group `admin_for_agent_scope = true` with you as a member.
-channel-runtime-request-timeout = ⚠️ The task reached its processing deadline. Some actions may have completed; verify their state before retrying.
+channel-runtime-task-deadline = ⚠️ The task reached its processing deadline. Some actions may have completed; verify their state before retrying.
 channel-runtime-no-reply-refused = 🚫 I can't help with that request.
 channel-runtime-no-reply-failed = ⚠️ I couldn't complete that request.
 channel-runtime-current-model-status =
