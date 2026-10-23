@@ -1606,7 +1606,9 @@ pub(crate) fn run_tool_call_loop_with_initial_ingress<'a>(
     reported_usage: Option<ReportedRequestUsage>,
     repetition_guard: Option<&'a std::sync::Mutex<repetition::RepetitionGuard>>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + 'a>> {
-    Box::pin(run_tool_call_loop_impl(p, Some(subject), reported_usage, repetition_guard))
+    Box::pin(zeroclaw_tools::task_ssh::scope(Box::pin(
+        run_tool_call_loop_impl(p, Some(subject), reported_usage, repetition_guard),
+    )))
 }
 
 /// Non-streamed Agent turns own the guard without steering ingress.
@@ -1615,7 +1617,9 @@ pub(crate) fn run_tool_call_loop_with_guard<'a>(
     p: ToolLoop<'a>,
     repetition_guard: Option<&'a std::sync::Mutex<repetition::RepetitionGuard>>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + 'a>> {
-    Box::pin(run_tool_call_loop_impl(p, None, None, repetition_guard))
+    Box::pin(zeroclaw_tools::task_ssh::scope(Box::pin(
+        run_tool_call_loop_impl(p, None, None, repetition_guard),
+    )))
 }
 
 /// Recovery evidence owned by one logical turn, including model switches.
@@ -1634,7 +1638,9 @@ pub fn run_tool_call_loop_with_recovery<'a>(
 pub fn run_tool_call_loop(
     p: ToolLoop<'_>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + '_>> {
-    Box::pin(run_tool_call_loop_impl(p, None, None, None))
+    Box::pin(zeroclaw_tools::task_ssh::scope(Box::pin(
+        run_tool_call_loop_impl(p, None, None, None),
+    )))
 }
 
 async fn run_tool_call_loop_impl<'a>(
