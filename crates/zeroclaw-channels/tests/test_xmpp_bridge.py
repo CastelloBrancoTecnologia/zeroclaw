@@ -1,6 +1,8 @@
 """Transport helper unit tests; run with the XMPP requirements installed."""
 import importlib.util
 import io
+import asyncio
+import threading
 from unittest.mock import patch
 import json
 from pathlib import Path
@@ -21,14 +23,35 @@ class BridgeTests(unittest.TestCase):
             # The process locale must not determine the protocol encoding.
             output = io.TextIOWrapper(raw, encoding="ascii")
             with patch.object(bridge.sys, "stdout", output):
-                bridge.emit("message", id="one", **{"from": "alice@example.org"},
-                            body=body, encrypted=True)
-                bridge.emit("ready")
+                asyncio.run(bridge.emit("message", id="one", **{"from": "alice@example.org"},
+                            body=body, encrypted=True))
+                asyncio.run(bridge.emit("ready"))
             frames = raw.getvalue().splitlines()
             self.assertEqual(len(frames), 2)
             self.assertLess(len(frames[0]), 512 * 1024)
             self.assertEqual(json.loads(frames[0])["body"], body)
             self.assertEqual(json.loads(frames[1])["type"], "ready")
+
+    def test_blocked_stdout_does_not_block_event_loop(self):
+        entered = threading.Event()
+        release = threading.Event()
+        class Output:
+            def write(self, data):
+                entered.set()
+                if not release.wait(3):
+                    raise TimeoutError("test writer not released")
+            def flush(self): pass
+        async def check():
+            with patch.object(bridge.sys, "stdout", type("Stream", (), {"buffer": Output()})()):
+                task = asyncio.create_task(bridge.emit("message", body="x" * 300000))
+                try:
+                    self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+                    await asyncio.wait_for(asyncio.sleep(0), .2)
+                    self.assertFalse(task.done())
+                finally:
+                    release.set()
+                    await task
+        asyncio.run(check())
 
     def test_grouped_fingerprints_and_invalid_entries(self):
         fingerprint='0123456789abcdef'*4

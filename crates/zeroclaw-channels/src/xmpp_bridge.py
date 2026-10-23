@@ -11,15 +11,25 @@ from pathlib import Path
 import sqlite3
 import ssl
 import sys
+import threading
 import uuid
 
 
-def emit(kind, **fields):
+_output_lock = threading.Lock()
+
+
+def write_frame(kind, **fields):
     # Write UTF-8 explicitly: ASCII escaping can exceed the Rust frame bound
     # for an otherwise valid maximum-length Unicode message.
     frame = json.dumps({"type": kind, **fields}, ensure_ascii=False) + "\n"
-    sys.stdout.buffer.write(frame.encode("utf-8"))
-    sys.stdout.buffer.flush()
+    with _output_lock:
+        sys.stdout.buffer.write(frame.encode("utf-8"))
+        sys.stdout.buffer.flush()
+
+
+async def emit(kind, **fields):
+    # A full stdout pipe must not stop XMPP handlers or stdin consumption.
+    await asyncio.to_thread(write_frame, kind, **fields)
 
 
 def private_database(directory):
@@ -161,7 +171,7 @@ async def main(setup):
                 with db:
                     db.execute("insert or replace into state values ('public/identity',?)", (json.dumps(public),))
             self.send_presence()
-            emit("online")
+            await emit("online")
 
         def failed(self, _):
             if not done.done():
@@ -206,7 +216,7 @@ async def main(setup):
                 inserted = db.execute("insert or ignore into seen values (?,?)", (from_jid, message_id)).rowcount
                 db.execute("delete from seen where rowid not in (select rowid from seen order by rowid desc limit 2048)")
             if inserted:
-                emit("message", id=message_id, **{"from": from_jid}, body=body, encrypted=encrypted)
+                await emit("message", id=message_id, **{"from": from_jid}, body=body, encrypted=encrypted)
 
         async def send_text(self, command):
             target = JID(command["to"])
@@ -252,9 +262,9 @@ async def main(setup):
                 raise ValueError("Unknown bridge command")
             try:
                 await asyncio.wait_for(client.send_text(command), timeout=45)
-                emit("sent", id=command["id"], ok=True)
+                await emit("sent", id=command["id"], ok=True)
             except Exception as error:
-                emit("sent", id=command["id"], ok=False, error_code=type(error).__name__)
+                await emit("sent", id=command["id"], ok=False, error_code=type(error).__name__)
 
     command_task = asyncio.create_task(commands())
     try:
@@ -275,5 +285,5 @@ if __name__ == "__main__":
             raise ValueError("Invalid bridge setup")
         asyncio.run(main(json.loads(initial)))
     except Exception:
-        emit("fatal")
+        write_frame("fatal")
         sys.exit(1)

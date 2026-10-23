@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::{collections::HashMap, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
 use tokio::{
-    io::AsyncWriteExt,
+    io::{AsyncWrite, AsyncWriteExt},
     sync::{Mutex, mpsc, oneshot},
 };
 use tokio_util::codec::{FramedRead, LinesCodec};
@@ -23,6 +23,17 @@ struct Outbound {
     recipient: String,
     content: String,
     result: oneshot::Sender<bool>,
+}
+
+async fn write_frames<W: AsyncWrite + Unpin>(
+    mut stdin: W,
+    mut frames: mpsc::Receiver<Vec<u8>>,
+) -> std::io::Result<()> {
+    while let Some(frame) = frames.recv().await {
+        stdin.write_all(&frame).await?;
+        stdin.flush().await?;
+    }
+    Ok(())
 }
 
 pub struct XmppChannel {
@@ -129,6 +140,10 @@ impl XmppChannel {
         stdin.write_all(format!("{setup}\n").as_bytes()).await?;
         stdin.flush().await?;
         let mut frames = FramedRead::new(stdout, LinesCodec::new_with_max_length(MAX_FRAME));
+        let (writes, write_rx) = mpsc::channel(32);
+        // Poll writes beside reads: neither pipe may prevent the other draining.
+        let writer = write_frames(stdin, write_rx);
+        tokio::pin!(writer);
         let (outbound, mut rx) = mpsc::channel::<Outbound>(32);
         let mut pending: HashMap<String, oneshot::Sender<bool>> = HashMap::new();
         let deadline = tokio::time::sleep(Duration::from_secs(self.config.connect_timeout_secs));
@@ -136,6 +151,10 @@ impl XmppChannel {
         let mut sequence = 0u64;
         loop {
             tokio::select! {
+                result = &mut writer => {
+                    result.context("XMPP bridge write failed")?;
+                    bail!("XMPP bridge writer stopped");
+                }
                 () = &mut deadline, if !self.online.load(Ordering::Acquire) => {
                     bail!("XMPP TLS/authentication deadline exceeded");
                 }
@@ -164,8 +183,8 @@ impl XmppChannel {
                     sequence += 1;
                     let id = sequence.to_string();
                     let frame = json!({"type":"send", "id":id, "to":request.recipient, "body":request.content});
-                    stdin.write_all(format!("{frame}\n").as_bytes()).await?;
-                    stdin.flush().await?;
+                    writes.try_send(format!("{frame}\n").into_bytes())
+                        .context("XMPP bridge write queue unavailable")?;
                     pending.insert(id, request.result);
                 }
             }
@@ -276,6 +295,57 @@ mod tests {
             ok: false,
         }
     }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn full_pipes_do_not_deadlock_listener_and_reply() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = tempfile::tempdir().expect("fixture directory");
+        let interpreter = folder.path().join("worker");
+        // This protocol fixture fills stdout before reading a large send from
+        // stdin. The old listener blocked writing stdin and never drained it.
+        std::fs::write(&interpreter, r#"#!/usr/bin/python3
+import json,sys,time
+json.loads(sys.stdin.readline())
+print(json.dumps({'type':'online'}),flush=True)
+time.sleep(.1)
+print(json.dumps({'type':'message','id':'incoming','from':'alice@example.org','body':chr(0x1f680)*64000,'encrypted':False},ensure_ascii=False),flush=True)
+command=json.loads(sys.stdin.readline())
+print(json.dumps({'type':'sent','id':command['id'],'ok':True}),flush=True)
+time.sleep(30)
+"#).expect("fixture worker");
+        std::fs::set_permissions(&interpreter, std::fs::Permissions::from_mode(0o700))
+            .expect("executable fixture");
+        let mut adapter = channel(false);
+        adapter.config.max_message_chars = 64000;
+        adapter.config.python_path = interpreter.to_string_lossy().into_owned();
+        let adapter = Arc::new(adapter);
+        let (tx, mut inbound) = mpsc::channel(2);
+        let listener_adapter = adapter.clone();
+        let listener = tokio::spawn(async move { listener_adapter.listen(tx).await });
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            while !adapter.online.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            let message = SendMessage::new("\u{1f680}".repeat(64000), "alice@example.org");
+            let reply = adapter.send(&message);
+            let receive = inbound.recv();
+            let (sent, message) = tokio::join!(reply, receive);
+            sent.expect("large reply acknowledged");
+            assert_eq!(
+                message
+                    .expect("large incoming message")
+                    .content
+                    .chars()
+                    .count(),
+                64000
+            );
+        })
+        .await;
+        listener.abort();
+        let _ = listener.await;
+        result.expect("both pipe directions make progress");
+    }
+
     #[test]
     fn authorization_and_required_encryption_precede_dispatch() {
         let channel = channel(true);
