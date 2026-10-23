@@ -112,6 +112,18 @@ impl XmppChannel {
     }
 
     async fn run(&self, tx: mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
+        let interpreter =
+            std::env::var_os("ZEROCLAW_XMPP_PYTHON").unwrap_or_else(|| "python3".into());
+        self.run_with_interpreter(tx, interpreter).await
+    }
+
+    // Only the trusted process environment chooses the executable. Channel
+    // configuration (including Web/API updates) never becomes a command path.
+    async fn run_with_interpreter(
+        &self,
+        tx: mpsc::Sender<ChannelMessage>,
+        interpreter: std::ffi::OsString,
+    ) -> anyhow::Result<()> {
         ensure!(
             !self.alias.is_empty()
                 && self.alias != "."
@@ -119,7 +131,7 @@ impl XmppChannel {
                 && !self.alias.contains(['/', '\\', ':']),
             "XMPP alias must be a single state-directory component"
         );
-        let mut child = tokio::process::Command::new(&self.config.python_path)
+        let mut child = tokio::process::Command::new(interpreter)
             .args(["-I", "-u", "-c", BRIDGE])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -317,11 +329,14 @@ time.sleep(30)
             .expect("executable fixture");
         let mut adapter = channel(false);
         adapter.config.max_message_chars = 64000;
-        adapter.config.python_path = interpreter.to_string_lossy().into_owned();
         let adapter = Arc::new(adapter);
         let (tx, mut inbound) = mpsc::channel(2);
         let listener_adapter = adapter.clone();
-        let listener = ::zeroclaw_spawn::spawn!(async move { listener_adapter.listen(tx).await });
+        let listener = ::zeroclaw_spawn::spawn!(async move {
+            listener_adapter
+                .run_with_interpreter(tx, interpreter.into_os_string())
+                .await
+        });
         let result = tokio::time::timeout(Duration::from_secs(5), async {
             while !adapter.online.load(Ordering::Acquire) {
                 tokio::time::sleep(Duration::from_millis(1)).await;

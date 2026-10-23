@@ -13,6 +13,13 @@ python3 -m venv /opt/zeroclaw-xmpp
 /opt/zeroclaw-xmpp/bin/pip install -r crates/zeroclaw-channels/xmpp-requirements.txt
 ```
 
+For the current compatibility worker, set `ZEROCLAW_XMPP_PYTHON` in the trusted
+service environment to `/opt/zeroclaw-xmpp/bin/python` before starting the daemon.
+Its default is `python3`. Restart after changing that environment. The WebUI,
+config API and channel TOML cannot choose an executable. Legacy `python_path`
+values are ignored; migrate that setting to the service environment before
+upgrading an existing virtualenv deployment. Do not put passwords in this variable.
+
 The Rust channel uses an embedded, isolated Python transport worker with
 Slixmpp. The worker performs XMPP and optional OMEMO; it does not call the
 gateway or run a second agent loop. The existing channel supervisor owns
@@ -33,8 +40,8 @@ For TLS-only deployments install only `slixmpp==1.12.0`.
    returns the saved password. Prosody with LDAP authentication uses the
    account's directory password; LDAP is a server setting, not a special
    client authentication mode.
-3. In **Advanced**, set `python_path` to the venv interpreter, and optionally
-   choose a resource, message-size limit, connection deadline and OMEMO.
+3. In **Advanced**, choose a resource, message-size limit, connection deadline
+   and OMEMO. The interpreter is an operator-controlled process setting.
 4. In **Allowed users**, create an authorization policy for this channel or
    edit an existing matching policy. The create button makes a canonical peer
    group scoped to `xmpp.<alias>`. Put bare JIDs in `external_peers`; `ignore`
@@ -64,7 +71,6 @@ username = "bot@example.org"
 server = "xmpp.example.org"
 port = 5222
 protocol = "starttls" # Or direct_tls with the server's Direct TLS port.
-python_path = "/opt/zeroclaw-xmpp/bin/python"
 resource = "zeroclaw"
 # Configure password via the secret-aware WebUI or CLI, not a shared file.
 omemo_enabled = false

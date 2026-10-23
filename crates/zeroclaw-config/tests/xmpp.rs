@@ -42,3 +42,24 @@ omemo_trusted_devices = ["alice@example.org 0123456789abcdef0123456789abcdef0123
     );
     assert!(toml::from_str::<Config>(&text.replace("starttls", "plaintext")).is_err());
 }
+
+#[test]
+fn xmpp_executable_path_is_not_a_writable_channel_property() {
+    let mut config = Config::default();
+    config
+        .channels
+        .xmpp
+        .insert("private".into(), XmppConfig::default());
+    assert!(
+        config
+            .set_prop(
+                "channels.xmpp.private.python_path",
+                "/tmp/untrusted-executable"
+            )
+            .is_err()
+    );
+    let text = toml::to_string(&config).unwrap();
+    assert!(!text.contains("python_path"));
+    let legacy: Config = toml::from_str("schema_version = 3\n[channels.xmpp.private]\npython_path = '/tmp/ignored-legacy-setting'\n").unwrap();
+    assert!(!toml::to_string(&legacy).unwrap().contains("python_path"));
+}

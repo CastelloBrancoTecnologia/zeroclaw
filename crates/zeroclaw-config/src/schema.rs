@@ -19179,9 +19179,6 @@ pub struct XmppConfig {
     /// Deadline for connection, TLS and authentication in seconds.
     #[tab(Advanced)]
     pub connect_timeout_secs: u64,
-    /// Python interpreter with the XMPP bridge requirements installed. No shell is used.
-    #[tab(Advanced)]
-    pub python_path: String,
     /// Require OMEMO for both inbound and outbound text. No plaintext fallback.
     /// Requires slixmpp-omemo and manually trusted device fingerprints below.
     #[tab(Advanced)]
@@ -19206,7 +19203,6 @@ impl Default for XmppConfig {
             resource: "zeroclaw".into(),
             max_message_chars: 16000,
             connect_timeout_secs: 30,
-            python_path: "python3".into(),
             omemo_enabled: false,
             omemo_trusted_devices: Vec::new(),
         }
@@ -24550,7 +24546,6 @@ impl Config {
                 ("server", &xmpp.server),
                 ("password", &xmpp.password),
                 ("resource", &xmpp.resource),
-                ("python_path", &xmpp.python_path),
             ] {
                 validate_required_field(
                     &format!("channels.xmpp.{alias}.{field}"),
