@@ -13,12 +13,17 @@ English locale, Chrome, desktop 1440x1000 and mobile 390x844.
 - [Canonical allowed-user policy](xmpp-allowed-users-desktop.png)
 - [Mobile allowed-user policy](xmpp-allowed-users-mobile.png)
 
-Run the frontend locally on port 5178, then run `node .pr-evidence/xmpp-ui.cjs`
-with Playwright available to Node. `XMPP_UI_URL` overrides the frontend origin.
-The harness intercepts API requests and checks protocol persistence, independent
-port selection, blank/masked replacement-secret editing, OMEMO and enabled
-switches, creation of an alias-scoped canonical authorization policy, peer-group updates, absence of unrelated peer groups,
-JavaScript errors and horizontal page overflow.
+The temporary local fixture intercepted API requests and checked protocol
+persistence, independent port selection, blank/masked replacement-secret
+editing, OMEMO and enabled switches, alias-scoped canonical authorization,
+peer-group updates, JavaScript errors and horizontal page overflow. Its
+ad hoc driver and raw JSON are intentionally absent from the PR after review;
+there is no supported in-PR script or configurable navigation origin.
+
+The Advanced screenshot was refreshed after removing the executable setting;
+see [the code revision, focused results and visual scope](xmpp-executable-setting.md).
+The other images retain their original fixture scope. Follow the supported
+configuration steps in the channel guide for manual reproduction.
 
 ## Transport
 
