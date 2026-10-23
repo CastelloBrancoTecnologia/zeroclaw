@@ -253,6 +253,19 @@ sign-off:
 
 ## Source pointers
 
+### Recovery with task-owned SSH and progress notices
+
+The recovery entrypoints return boxed `Send` futures, matching the task-owned
+SSH entrypoints. This explicit boundary also breaks recursive future-type
+inference through nested SOP execution. Preserve the SSH scope around the
+initial-ingress, guarded and low-level turn paths when combining the changes;
+the recovery handle remains the canonical owner of completed-dispatch evidence.
+
+The resume regressions observe the terminal notice emitted by the progress
+implementation (`channel-runtime-task-deadline`). Changing that expectation is
+a test integration adjustment: it does not change the processing deadline,
+retry an external operation or add a second notification path.
+
 Canonical docs:
 
 - [Request lifecycle](./request-lifecycle.md)
