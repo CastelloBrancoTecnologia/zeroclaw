@@ -321,7 +321,7 @@ time.sleep(30)
         let adapter = Arc::new(adapter);
         let (tx, mut inbound) = mpsc::channel(2);
         let listener_adapter = adapter.clone();
-        let listener = tokio::spawn(async move { listener_adapter.listen(tx).await });
+        let listener = ::zeroclaw_spawn::spawn!(async move { listener_adapter.listen(tx).await });
         let result = tokio::time::timeout(Duration::from_secs(5), async {
             while !adapter.online.load(Ordering::Acquire) {
                 tokio::time::sleep(Duration::from_millis(1)).await;
