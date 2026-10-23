@@ -34688,9 +34688,17 @@ BTC is currently around $65,000 based on latest tool output."#
                 .iter()
                 .any(|(role, content)| { role == "user" && content.contains("summarize this") })
         );
-        assert!(
-            !second_call.iter().any(|(role, _)| role == "assistant"),
-            "cancelled turn should not persist an assistant response"
+        let assistant_context: Vec<_> = second_call
+            .iter()
+            .filter(|(role, _)| role == "assistant")
+            .map(|(_, content)| content.as_str())
+            .collect();
+        assert_eq!(
+            assistant_context,
+            [
+                "[Task interrupted. Verify recorded tool results and any operation without a result before retrying; do not repeat completed changes.]"
+            ],
+            "cancelled turn must retain only its interruption marker, not a provider response"
         );
     }
 
@@ -35194,9 +35202,17 @@ BTC is currently around $65,000 based on latest tool output."#
                 .iter()
                 .any(|(role, content)| { role == "user" && content.contains("second question") })
         );
-        assert!(
-            !second_call.iter().any(|(role, _)| role == "assistant"),
-            "cancelled turn should not persist an assistant response"
+        let assistant_context: Vec<_> = second_call
+            .iter()
+            .filter(|(role, _)| role == "assistant")
+            .map(|(_, content)| content.as_str())
+            .collect();
+        assert_eq!(
+            assistant_context,
+            [
+                "[Task interrupted. Verify recorded tool results and any operation without a result before retrying; do not repeat completed changes.]"
+            ],
+            "cancelled turn must retain only its interruption marker, not a provider response"
         );
     }
 
@@ -35474,11 +35490,17 @@ BTC is currently around $65,000 based on latest tool output."#
                 .iter()
                 .any(|(role, content)| role == "user" && content.contains("enabled second"))
         );
-        assert!(
-            !enabled_second_call
-                .iter()
-                .any(|(role, _)| role == "assistant"),
-            "cancelled turn should not persist an assistant response"
+        let assistant_context: Vec<_> = enabled_second_call
+            .iter()
+            .filter(|(role, _)| role == "assistant")
+            .map(|(_, content)| content.as_str())
+            .collect();
+        assert_eq!(
+            assistant_context,
+            [
+                "[Task interrupted. Verify recorded tool results and any operation without a result before retrying; do not repeat completed changes.]"
+            ],
+            "cancelled alias must retain only its interruption marker, not a provider response"
         );
         drop(calls);
         drop(sent_messages);
