@@ -38,12 +38,14 @@ admitted work after process exit. Offline administrative behavior is exercised
 through child test executables; this does not claim a shipped administrator CLI.
 
 Two shared-ingress regressions separately confirm that admission precedes hooks
-and agent effects, and that a hook rewrite retains the original channel receipt.
+and agent effects, including unowned approval routes, and that a hook rewrite
+retains the original channel receipt.
 The regular XMPP unit filter passed 60 tests, with four opt-in/child probes ignored
 in that invocation; the network driver explicitly runs its ignored entrypoint.
 Strict feature-scoped Clippy and formatting passed. Dependency policy reported
-`advisories ok, bans ok, licenses ok, sources ok`; existing unmatched-policy
-warnings were inspected, and no advisory or license exemption was added.
+`advisories ok, bans ok, licenses ok, sources ok`; unmatched entries in the
+existing policy were explained by the selected feature graph and crypto upgrade.
+No advisory or license exemption was added.
 
 ## Limits
 

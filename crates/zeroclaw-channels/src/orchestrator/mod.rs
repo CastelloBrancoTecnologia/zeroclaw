@@ -12431,9 +12431,16 @@ async fn run_message_dispatch_loop_until_cancelled(
         // this exact ingress id. Ordinary messages create an inert guard.
         let delivery_message_id = msg.id.clone();
         let dispatch_ownership = ModelPickerDispatchOwnership::hold(&delivery_message_id);
-        // Only the canonical route may admit ingress for its channel instance.
+        // Every context shares the global channel registry. Approval-only
+        // routes can be unowned, but still require admission before gate effects.
+        // This registry lookup does not assign an agent to an unowned route.
+        let gate_ctx = router
+            .single_ctx
+            .as_ref()
+            .cloned()
+            .or_else(|| router.by_agent.values().next().cloned());
         let mut ingress_receipt = None;
-        let ingress_ctx = router.resolve(&msg);
+        let ingress_ctx = router.resolve(&msg).or_else(|| gate_ctx.clone());
         if let Some(ctx) = ingress_ctx
             && let Some(channel) = find_channel_for_message(&ctx.channels_by_name, &msg).cloned()
         {
@@ -12456,11 +12463,6 @@ async fn run_message_dispatch_loop_until_cancelled(
         // this global channel registry and prompt config.
         // Guarded here, not in the worker: these paths answer and cancel before
         // the worker runs. The worker still records the passive turn.
-        let gate_ctx = router
-            .single_ctx
-            .as_ref()
-            .cloned()
-            .or_else(|| router.by_agent.values().next().cloned());
         if !msg.passive_context
             && let Some(gate_ctx) = gate_ctx
         {
@@ -27066,8 +27068,28 @@ api_key = "anthropic-key"
         .await
         .unwrap();
         drop(tx);
-        run_message_dispatch_loop(rx, AgentRouter::single(ctx), 1).await;
-        assert_eq!(channel.admissions.load(Ordering::SeqCst), 1);
+        run_message_dispatch_loop(rx, AgentRouter::single(ctx.clone()), 1).await;
+        let unowned_router = AgentRouter::multi(
+            HashMap::from([("test".into(), ctx)]),
+            HashMap::new(),
+            None,
+            None,
+            None,
+        );
+        let unowned = ChannelMessage::new(
+            "denied-approval-ingress",
+            "alice@example.test",
+            "alice@example.test",
+            "approve synthetic-run#0",
+            "xmpp",
+            0,
+        );
+        assert!(unowned_router.resolve(&unowned).is_none());
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tx.send(unowned).await.unwrap();
+        drop(tx);
+        run_message_dispatch_loop(rx, unowned_router, 1).await;
+        assert_eq!(channel.admissions.load(Ordering::SeqCst), 2);
         assert_eq!(
             effects.load(Ordering::SeqCst),
             0,
