@@ -870,6 +870,8 @@ impl Channel for XmppChannel {
         agent: &str,
         history_key: &str,
     ) -> anyhow::Result<()> {
+        #[cfg(not(target_os = "linux"))]
+        let _ = (agent, history_key);
         if !self.config.omemo_enabled {
             return Ok(());
         }
@@ -910,6 +912,8 @@ impl Channel for XmppChannel {
         bail!("Encrypted ingress unavailable on this platform")
     }
     async fn inbound_returned(&self, message: &ChannelMessage) -> anyhow::Result<()> {
+        #[cfg(not(target_os = "linux"))]
+        let _ = message;
         if !self.config.omemo_enabled {
             return Ok(());
         }
@@ -952,6 +956,8 @@ impl Channel for XmppChannel {
         message: &ChannelMessage,
         control: &str,
     ) -> anyhow::Result<()> {
+        #[cfg(not(target_os = "linux"))]
+        let _ = (message, control);
         if !self.config.omemo_enabled {
             return Ok(());
         }
