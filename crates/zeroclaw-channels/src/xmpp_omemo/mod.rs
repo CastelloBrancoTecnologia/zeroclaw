@@ -13,3 +13,10 @@ pub mod prekeys;
 pub mod private_store;
 pub mod stanza;
 pub mod store;
+/// Untrusted input rejection, distinct from transport or local-state failure.
+#[derive(Debug, thiserror::Error)]
+#[error("Rejected encrypted input")]
+pub(crate) struct RejectedInbound;
+pub(crate) fn reject_input(_: impl std::fmt::Display) -> anyhow::Error {
+    RejectedInbound.into()
+}

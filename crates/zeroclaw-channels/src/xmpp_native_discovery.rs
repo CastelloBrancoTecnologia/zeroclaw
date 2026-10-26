@@ -285,10 +285,12 @@ where
         false,
     )
     .await?
-    .context("Missing peer list")?;
+    .ok_or(crate::xmpp_omemo::RejectedInbound)?;
     ensure!(
-        crate::xmpp_omemo::devices::DeviceList::parse(&list)?.contains(device),
-        "Sender device is not advertised"
+        crate::xmpp_omemo::devices::DeviceList::parse(&list)
+            .map_err(crate::xmpp_omemo::reject_input)?
+            .contains(device),
+        crate::xmpp_omemo::RejectedInbound
     );
     fetch(
         source,
@@ -301,7 +303,7 @@ where
         false,
     )
     .await?
-    .context("Missing peer bundle")
+    .ok_or_else(|| crate::xmpp_omemo::RejectedInbound.into())
 }
 pub(super) async fn refresh<R>(
     source: &mut R,

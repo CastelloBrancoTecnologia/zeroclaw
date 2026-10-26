@@ -11,12 +11,33 @@ const ROOT: &str = "omemo//eu.siacs.conversations.axolotl";
 /// Creates the identity fact, never an inferred or replacement identity.
 /// Existing rows of any kind refuse initialization, including partial state.
 pub fn initialize_empty(conn: &mut Connection, account: &str, device: u32, now: u64) -> Result<()> {
+    initialize(conn, account, device, now, false)
+}
+/// Called only after the exclusive exact-schema TLS-only ownership gate.
+pub fn initialize_tls_only(
+    conn: &mut Connection,
+    account: &str,
+    device: u32,
+    now: u64,
+) -> Result<()> {
+    initialize(conn, account, device, now, true)
+}
+fn initialize(
+    conn: &mut Connection,
+    account: &str,
+    device: u32,
+    now: u64,
+    tls_only: bool,
+) -> Result<()> {
     let jid: crate::xmpp_omemo::jid::BareJid = account.try_into()?;
     ensure!(
         jid.as_str() == account && (1..=i32::MAX as u32).contains(&device),
         "Canonical account and valid device required"
     );
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if tls_only {
+        tx.execute_batch("CREATE TABLE state(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
+    }
     let foreign: i64 = tx.query_row(
         "SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT IN ('state','seen')",
         [],
@@ -27,7 +48,11 @@ pub fn initialize_empty(conn: &mut Connection, account: &str, device: u32, now: 
         "Refusing identity initialization over existing native records"
     );
     let count: i64 = tx.query_row(
-        "SELECT (SELECT count(*) FROM state)+(SELECT count(*) FROM seen)",
+        if tls_only {
+            "SELECT count(*) FROM state"
+        } else {
+            "SELECT (SELECT count(*) FROM state)+(SELECT count(*) FROM seen)"
+        },
         [],
         |r| r.get(0),
     )?;

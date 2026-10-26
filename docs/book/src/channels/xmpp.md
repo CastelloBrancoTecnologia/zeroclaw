@@ -128,8 +128,10 @@ with existing state fails closed. Use a new alias for a new account.
 
 Native OMEMO state ownership is currently supported on Linux. TLS-only XMPP
 uses the native transport on other supported platforms; enabling OMEMO there
-fails closed. New identity creation is permitted only for a wholly absent
-alias directory and an existing daemon vault key. Existing partial/corrupt or
+fails closed. New identity creation requires an existing daemon vault key and
+either a wholly absent alias directory or an exclusively owned database with
+the exact TLS-only replay schema. The latter upgrades transactionally while
+preserving replay entries. Existing identity, partial/corrupt or
 wrong-account state, unsafe permissions, symlinks, hardlinks, WAL mode and
 concurrent database owners are refused without automatic repair.
 
@@ -148,6 +150,12 @@ create a second tool-execution ledger. A returned turn is not proof that its
 tools succeeded or its history persisted. Retention is deliberately bounded
 (128 pending, 1024 active records); exhausting a bound fails closed and
 requires operator reconciliation, rather than silently pruning unknown work.
+
+Encrypted messages retain individual receipts and bypass message coalescing.
+Returned `/stop`, approval-answer and event control paths are recorded separately
+from agent history; a crash before recording still leaves an unknown admitted
+outcome. Invalid/untrusted encrypted input is dropped without disconnecting
+other peers. Broken transport or unusable local state still stops the listener.
 
 Outgoing ciphertext is reserved atomically with all recipient ratchets. Only
 a completed socket write retires that exact reservation. Failed/cancelled

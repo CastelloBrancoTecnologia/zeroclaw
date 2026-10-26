@@ -482,7 +482,12 @@ pub(super) fn check(f: &Value, fresh: bool, root: &std::path::Path) -> anyhow::R
         "fault-incoming",
     )?;
     ensure!(
-        receipt.runtime.history_key == "synthetic-history"
+        receipt
+            .runtime
+            .as_ref()
+            .context("Missing runtime reference")?
+            .history_key
+            == "synthetic-history"
             && receipt.operator == "synthetic-operator"
             && receipt.source_token == current.review_token,
         "Release lost its review provenance"

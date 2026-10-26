@@ -40,10 +40,9 @@ fn is_authorized_pin(peer: &str, pin: [u8; 32], policy: &[String]) -> Result<boo
     Ok(trusted)
 }
 fn authorize_pin(peer: &str, pin: [u8; 32], policy: &[String]) -> Result<()> {
-    ensure!(
-        is_authorized_pin(peer, pin, policy)?,
-        "Device identity is not currently pinned"
-    );
+    if !is_authorized_pin(peer, pin, policy)? {
+        return Err(crate::xmpp_omemo::RejectedInbound.into());
+    }
     Ok(())
 }
 pub struct ChannelState {
@@ -54,8 +53,8 @@ pub struct ChannelState {
     cipher: std::sync::Arc<dyn crate::xmpp_omemo::inbox::InboxCipher>,
 }
 impl ChannelState {
-    /// Automatic identity initialization is allowed only when the entire
-    /// channel directory is absent, never when an existing identity is unreadable.
+    /// Initialize only an absent directory or exclusively validated TLS-only
+    /// schema, never when an existing encrypted identity is unreadable.
     pub fn open_or_initialize(
         path: &std::path::Path,
         account: &str,
@@ -68,7 +67,39 @@ impl ChannelState {
         );
         cipher.check_existing()?;
         match std::fs::symlink_metadata(path) {
-            Ok(_) => Self::open_existing(path, account, cipher, max_chars),
+            Ok(_) => match Self::open_existing(path, account, cipher.clone(), max_chars) {
+                Ok(state) => Ok(state),
+                Err(original) => {
+                    let mut owner = match PrivateStore::open_tls_only(path) {
+                        Ok(owner) => owner,
+                        Err(_) => return Err(original),
+                    };
+                    let mut random = [0u8; 4];
+                    getrandom::fill(&mut random).map_err(|_| {
+                        ::zeroclaw_log::record!(
+                            ERROR,
+                            ::zeroclaw_log::Event::new(
+                                module_path!(),
+                                ::zeroclaw_log::Action::Fail
+                            ),
+                            "Device identity randomness unavailable"
+                        );
+                        anyhow::Error::msg("Device identity randomness unavailable")
+                    })?;
+                    let device = (u32::from_le_bytes(random) & i32::MAX as u32).max(1);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)?
+                        .as_secs();
+                    crate::xmpp_omemo::initial_identity::initialize_tls_only(
+                        owner.connection(),
+                        account,
+                        device,
+                        now,
+                    )?;
+                    drop(owner);
+                    Self::open_existing(path, account, cipher, max_chars)
+                }
+            },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let mut owner = PrivateStore::create_new(path)?;
                 let mut random = [0u8; 4];
@@ -168,7 +199,7 @@ impl ChannelState {
         xml: &str,
         policy: &[String],
     ) -> Result<Option<(u32, [u8; 32])>> {
-        let selected = stanza::parse(xml, self.device)?;
+        let selected = stanza::parse(xml, self.device).map_err(crate::xmpp_omemo::reject_input)?;
         if selected.ciphertext.is_none() {
             return Ok(None);
         }
@@ -194,11 +225,17 @@ impl ChannelState {
             !keys.iter().any(|key| key.starts_with(&prefix)),
             "Partial session metadata must not be replaced"
         );
-        ensure!(selected.prekey, "First contact requires a prekey exchange");
+        if !selected.prekey {
+            return Err(crate::xmpp_omemo::RejectedInbound.into());
+        }
         let exchange =
             crate::xmpp_omemo::omemo::wire::PreKeySignalMessage::deserialize(&selected.wire)
-                .context("Invalid first-contact exchange")?;
-        let pin: [u8; 32] = exchange.identity_key.as_slice().try_into()?;
+                .ok_or(crate::xmpp_omemo::RejectedInbound)?;
+        let pin: [u8; 32] = exchange
+            .identity_key
+            .as_slice()
+            .try_into()
+            .map_err(crate::xmpp_omemo::reject_input)?;
         authorize_pin(peer, pin, policy)?;
         Ok(Some((selected.sender_device, pin)))
     }
@@ -213,14 +250,15 @@ impl ChannelState {
         let (device, pin) = self
             .discovery_request(peer, xml, policy)?
             .context("First contact no longer eligible")?;
-        let bundle = crate::xmpp_omemo::bundle::parse_pinned(bundle_xml, device, pin)?;
+        let bundle = crate::xmpp_omemo::bundle::parse_pinned(bundle_xml, device, pin)
+            .map_err(crate::xmpp_omemo::reject_input)?;
         let sign = bundle.signed_pre_key.signature[63] >> 7;
         let ed = curve25519_dalek::montgomery::MontgomeryPoint(pin)
             .to_edwards(sign)
             .context("Invalid peer identity")?
             .compress()
             .to_bytes();
-        let selected = stanza::parse(xml, self.device)?;
+        let selected = stanza::parse(xml, self.device).map_err(crate::xmpp_omemo::reject_input)?;
         let payload = selected
             .ciphertext
             .context("Missing first-contact payload")?;
@@ -241,10 +279,10 @@ impl ChannelState {
             },
             ed,
             |tx, content| {
-                let text = std::str::from_utf8(content)?;
+                let text = std::str::from_utf8(content).map_err(crate::xmpp_omemo::reject_input)?;
                 ensure!(
                     !text.trim().is_empty() && text.chars().count() <= max_chars,
-                    "Invalid ingress text length"
+                    crate::xmpp_omemo::RejectedInbound
                 );
                 crate::xmpp_omemo::inbox::stage(
                     tx, &cipher, &account, peer, id, device, pin, content,
@@ -269,7 +307,7 @@ impl ChannelState {
         if seen {
             return Ok(None);
         }
-        let selected = stanza::parse(xml, self.device)?;
+        let selected = stanza::parse(xml, self.device).map_err(crate::xmpp_omemo::reject_input)?;
         let Some(payload) = selected.ciphertext else {
             return Ok(None);
         };
@@ -290,10 +328,10 @@ impl ChannelState {
                 nonce: &selected.nonce,
             },
             |tx, content| {
-                let text = std::str::from_utf8(content)?;
+                let text = std::str::from_utf8(content).map_err(crate::xmpp_omemo::reject_input)?;
                 ensure!(
                     !text.trim().is_empty() && text.chars().count() <= max_chars,
-                    "Invalid ingress text length"
+                    crate::xmpp_omemo::RejectedInbound
                 );
                 crate::xmpp_omemo::inbox::stage(
                     tx,
@@ -378,6 +416,16 @@ impl ChannelState {
             },
         )
     }
+    pub fn control_returned(&mut self, peer: &str, id: &str, control: &str) -> Result<()> {
+        crate::xmpp_omemo::inbox::control_returned(
+            self.owner.connection(),
+            &self.cipher,
+            &self.account,
+            peer,
+            id,
+            control,
+        )
+    }
     pub fn returned(&mut self, peer: &str, id: &str) -> Result<()> {
         crate::xmpp_omemo::inbox::returned(self.owner.connection(), peer, id)
     }
@@ -428,6 +476,155 @@ impl ChannelState {
 mod policy_tests {
     use super::is_authorized_pin;
     #[test]
+    fn tls_only_upgrade_preserves_seen_and_never_replaces_identity() -> anyhow::Result<()> {
+        use std::{os::unix::fs::PermissionsExt, sync::Arc};
+        let root = tempfile::tempdir()?;
+        let vault = crate::xmpp::vault::VaultInboxCipher {
+            store: zeroclaw_config::secrets::SecretStore::new(root.path(), true),
+            alias: "private".into(),
+        };
+        vault.store.encrypt("synthetic initialization")?;
+        let cipher: Arc<dyn crate::xmpp_omemo::inbox::InboxCipher> = Arc::new(vault);
+        let path = root.path().join("private");
+        std::fs::create_dir(&path)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+        let db_path = path.join("omemo.sqlite3");
+        let db = rusqlite::Connection::open(&db_path)?;
+        db.execute_batch("CREATE TABLE seen(sender TEXT,id TEXT,PRIMARY KEY(sender,id));INSERT INTO seen VALUES('alice@example.test','old-tls-message');")?;
+        std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o600))?;
+        drop(db);
+        let mut state = super::ChannelState::open_or_initialize(
+            &path,
+            "bob@example.test",
+            cipher.clone(),
+            64000,
+        )?;
+        let identity = state.public_bundle()?.xml;
+        for control in ["stop", "gate", "event"] {
+            let db = state.owner.connection();
+            let tx = db.transaction()?;
+            crate::xmpp_omemo::inbox::stage(
+                &tx,
+                &cipher,
+                "bob@example.test",
+                "alice@example.test",
+                control,
+                101,
+                [1; 32],
+                b"synthetic control",
+            )?;
+            tx.execute(
+                "INSERT INTO seen VALUES('alice@example.test',?1)",
+                [control],
+            )?;
+            tx.commit()?;
+            assert!(crate::xmpp_omemo::inbox::admit(
+                db,
+                "alice@example.test",
+                control
+            )?);
+            db.execute_batch("CREATE TEMP TRIGGER fail_control BEFORE UPDATE ON native_omemo_inbox BEGIN SELECT RAISE(ABORT,'synthetic control fault'); END;")?;
+            assert!(
+                crate::xmpp_omemo::inbox::control_returned(
+                    db,
+                    &cipher,
+                    "bob@example.test",
+                    "alice@example.test",
+                    control,
+                    control
+                )
+                .is_err()
+            );
+            let unknown = crate::xmpp_omemo::inbox::inspect(
+                db,
+                &cipher,
+                "bob@example.test",
+                "alice@example.test",
+                control,
+            )?;
+            assert!(matches!(
+                unknown.phase,
+                crate::xmpp_omemo::inbox::Phase::Admitted
+            ));
+            db.execute_batch("DROP TRIGGER fail_control;")?;
+            crate::xmpp_omemo::inbox::control_returned(
+                db,
+                &cipher,
+                "bob@example.test",
+                "alice@example.test",
+                control,
+                control,
+            )?;
+            let record = crate::xmpp_omemo::inbox::inspect(
+                db,
+                &cipher,
+                "bob@example.test",
+                "alice@example.test",
+                control,
+            )?;
+            assert!(record.runtime.is_none());
+            crate::xmpp_omemo::inbox::release_reviewed_returned(
+                db,
+                &cipher,
+                "bob@example.test",
+                "alice@example.test",
+                control,
+                crate::xmpp_omemo::inbox::ReleaseReview {
+                    expected_token: record.review_token,
+                    operator: "synthetic-operator",
+                    evidence: "synthetic-control-review",
+                },
+            )?;
+            let receipt = crate::xmpp_omemo::inbox::inspect_release(
+                db,
+                &cipher,
+                "bob@example.test",
+                "alice@example.test",
+                control,
+            )?;
+            assert_eq!(receipt.control.as_deref(), Some(control));
+            assert!(receipt.runtime.is_none());
+        }
+        let seen: i64 = state.owner.connection().query_row(
+            "SELECT count(*) FROM seen WHERE id='old-tls-message'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(seen, 1);
+        drop(state);
+        let mut state = super::ChannelState::open_or_initialize(
+            &path,
+            "bob@example.test",
+            cipher.clone(),
+            64000,
+        )?;
+        assert_eq!(state.public_bundle()?.xml, identity);
+        drop(state);
+        assert!(
+            super::ChannelState::open_or_initialize(
+                &path,
+                "other@example.test",
+                cipher.clone(),
+                64000
+            )
+            .is_err()
+        );
+        let db = rusqlite::Connection::open(&db_path)?;
+        db.execute("DELETE FROM state WHERE key='account'", [])?;
+        let before: i64 = db.query_row("SELECT count(*) FROM state", [], |r| r.get(0))?;
+        drop(db);
+        assert!(
+            super::ChannelState::open_or_initialize(&path, "bob@example.test", cipher, 64000)
+                .is_err()
+        );
+        let db = rusqlite::Connection::open(&db_path)?;
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM state", [], |r| r.get::<_, i64>(0))?,
+            before
+        );
+        Ok(())
+    }
+    #[test]
     fn configured_grouping_and_legacy_key_prefix_match_native_policy() -> anyhow::Result<()> {
         let pin = [0xabu8; 32];
         for entry in [
@@ -449,6 +646,11 @@ mod policy_tests {
             pin,
             &[format!("mallory@example.test {}", hex::encode(pin))]
         )?);
+        assert!(
+            super::authorize_pin("alice@example.test", pin, &[])
+                .unwrap_err()
+                .is::<crate::xmpp_omemo::RejectedInbound>()
+        );
         assert!(
             is_authorized_pin(
                 "alice@example.test",

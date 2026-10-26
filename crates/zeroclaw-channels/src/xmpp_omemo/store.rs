@@ -166,17 +166,17 @@ pub fn receive_with(
             exchange.identity_key == remote
                 && exchange.base_key
                     == decode(&load(&tx, &format!("{prefix}key_exchange/ephemeral_key"))?)?,
-            "Prekey header does not belong to existing session"
+            crate::xmpp_omemo::RejectedInbound
         );
         ensure!(
             load(&tx, &format!("{prefix}key_exchange/signed_pre_key_id"))?.as_u64()
                 == Some(u64::from(exchange.signed_pre_key_id)),
-            "Prekey header signed key mismatch"
+            crate::xmpp_omemo::RejectedInbound
         );
         ensure!(
             load(&tx, &format!("{prefix}key_exchange/pre_key_id"))?.as_u64()
                 == exchange.pre_key_id.map(u64::from),
-            "Prekey header one-time key mismatch"
+            crate::xmpp_omemo::RejectedInbound
         );
     }
     let seen: Option<i64> = tx
@@ -197,8 +197,11 @@ pub fn receive_with(
         input.peer_device,
         input.peer.into(),
     )?;
-    let plaintext =
-        Zeroizing::new(session.decrypt_payload(input.wire, input.ciphertext, input.nonce)?);
+    let plaintext = Zeroizing::new(
+        session
+            .decrypt_payload(input.wire, input.ciphertext, input.nonce)
+            .map_err(crate::xmpp_omemo::reject_input)?,
+    );
     let state = Zeroizing::new(serde_json::to_string(&session.export()?)?);
     ensure!(
         tx.execute(

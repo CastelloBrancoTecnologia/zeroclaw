@@ -63,7 +63,7 @@ impl<Io: AsyncBufRead + AsyncWrite + Unpin> Sink<Stanza> for OwnedStanzaStream<I
 type CryptoOwner = Arc<Mutex<crate::xmpp_omemo::channel_state::ChannelState>>;
 #[cfg(target_os = "linux")]
 #[path = "xmpp_native_inbox_vault.rs"]
-mod vault;
+pub(crate) mod vault;
 #[cfg(target_os = "linux")]
 use vault::VaultInboxCipher;
 
@@ -325,12 +325,14 @@ impl XmppChannel {
         if encrypted.len() != 1 {
             return Ok(None);
         }
-        let id = message
+        let Some(id) = message
             .id
             .as_ref()
-            .context("Encrypted XMPP message needs an ID")?
-            .0
-            .clone();
+            .map(|id| id.0.clone())
+            .filter(|id| !id.is_empty() && id.len() <= 512)
+        else {
+            return Ok(None);
+        };
         let mut bytes = Vec::new();
         encrypted[0].write_to(&mut bytes)?;
         let pins = self
@@ -352,10 +354,9 @@ impl XmppChannel {
         let content = if let Some((device, _)) = missing {
             let bundle =
                 discovery::peer_bundle(source, requests, pending, own, &sender, device).await?;
-            ensure!(
-                self.allowed(&account),
-                "Peer authorization changed during discovery"
-            );
+            if !self.allowed(&account) {
+                return Ok(None);
+            }
             let content = state
                 .lock()
                 .map_err(|_| {
@@ -716,15 +717,23 @@ impl XmppChannel {
                     Stanza::Message(message) => {
                         #[cfg(target_os = "linux")]
                         let message = if let Some(state) = &receive_crypto {
-                            self.encrypted_inbound(
-                                message,
-                                &own,
-                                state,
-                                &mut source,
-                                &requests,
-                                &mut pending,
-                            )
-                            .await?
+                            match self
+                                .encrypted_inbound(
+                                    message,
+                                    &own,
+                                    state,
+                                    &mut source,
+                                    &requests,
+                                    &mut pending,
+                                )
+                                .await
+                            {
+                                Ok(message) => message,
+                                Err(error) if error.is::<crate::xmpp_omemo::RejectedInbound>() => {
+                                    None
+                                }
+                                Err(error) => return Err(error),
+                            }
                         } else {
                             self.inbound(message, &own)
                         };
@@ -931,6 +940,47 @@ impl Channel for XmppChannel {
                 })?
                 .returned(&message.sender, &message.id);
             return result;
+        }
+        #[cfg(not(target_os = "linux"))]
+        bail!("Encrypted ingress unavailable on this platform")
+    }
+    fn requires_individual_ingress(&self) -> bool {
+        self.config.omemo_enabled
+    }
+    async fn inbound_control_returned(
+        &self,
+        message: &ChannelMessage,
+        control: &str,
+    ) -> anyhow::Result<()> {
+        if !self.config.omemo_enabled {
+            return Ok(());
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let state = self
+                .encrypted
+                .lock()
+                .map_err(|_| {
+                    ::zeroclaw_log::record!(
+                        ERROR,
+                        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail),
+                        "Encrypted state lock poisoned"
+                    );
+                    anyhow::Error::msg("Encrypted state lock poisoned")
+                })?
+                .clone()
+                .context("Encrypted channel offline")?;
+            state
+                .lock()
+                .map_err(|_| {
+                    ::zeroclaw_log::record!(
+                        ERROR,
+                        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail),
+                        "Encrypted state lock poisoned"
+                    );
+                    anyhow::Error::msg("Encrypted state lock poisoned")
+                })?
+                .control_returned(&message.sender, &message.id, control)
         }
         #[cfg(not(target_os = "linux"))]
         bail!("Encrypted ingress unavailable on this platform")

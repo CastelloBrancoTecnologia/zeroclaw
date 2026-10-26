@@ -909,6 +909,18 @@ pub trait Channel: Send + Sync + crate::attribution::Attributable {
     async fn inbound_returned(&self, _message: &ChannelMessage) -> anyhow::Result<()> {
         Ok(())
     }
+    /// Record a returned dispatcher control path, independently of agent history.
+    async fn inbound_control_returned(
+        &self,
+        _message: &ChannelMessage,
+        _control: &str,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+    /// Durable per-message receipts must not be merged into another message's turn.
+    fn requires_individual_ingress(&self) -> bool {
+        false
+    }
 
     /// Bind original ingress to the canonical runtime history; no execution status copy.
     async fn inbound_runtime_bound(

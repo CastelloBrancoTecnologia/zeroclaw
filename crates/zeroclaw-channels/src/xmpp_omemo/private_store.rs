@@ -23,6 +23,12 @@ fn private(metadata: &fs::Metadata, uid: u32, mode: u32) -> Result<()> {
 }
 impl PrivateStore {
     pub fn open_existing(directory: &Path) -> Result<Self> {
+        Self::open(directory, false)
+    }
+    pub fn open_tls_only(directory: &Path) -> Result<Self> {
+        Self::open(directory, true)
+    }
+    fn open(directory: &Path, tls_only: bool) -> Result<Self> {
         ensure!(directory.is_absolute(), "Absolute state directory required");
         let uid = fs::metadata("/proc/self")?.uid();
         let mut walked = std::path::PathBuf::new();
@@ -107,14 +113,35 @@ impl PrivateStore {
                 .query_map([], |r| Ok((r.get(1)?, r.get(2)?)))?
                 .collect::<std::result::Result<_, _>>()?)
         };
-        ensure!(
-            columns("state")?
-                == vec![
-                    ("key".into(), "TEXT".into()),
-                    ("value".into(), "TEXT".into())
-                ],
-            "Unsupported state schema"
-        );
+        if tls_only {
+            let objects: Vec<(String,String)> = connection.prepare("SELECT type,name FROM sqlite_master WHERE name NOT LIKE 'sqlite_autoindex_%' ORDER BY name")?
+                .query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<_,_>>()?;
+            ensure!(
+                objects == vec![("table".into(), "seen".into())],
+                "Not an exact TLS-only database"
+            );
+            let schema: Vec<(String, String, bool, i64)> = connection
+                .prepare("PRAGMA table_info(seen)")?
+                .query_map([], |r| Ok((r.get(1)?, r.get(2)?, r.get(3)?, r.get(5)?)))?
+                .collect::<std::result::Result<_, _>>()?;
+            ensure!(
+                schema
+                    == vec![
+                        ("sender".into(), "TEXT".into(), false, 1),
+                        ("id".into(), "TEXT".into(), false, 2)
+                    ],
+                "Not the known TLS-only replay schema"
+            );
+        } else {
+            ensure!(
+                columns("state")?
+                    == vec![
+                        ("key".into(), "TEXT".into()),
+                        ("value".into(), "TEXT".into())
+                    ],
+                "Unsupported state schema"
+            );
+        }
         ensure!(
             columns("seen")?
                 == vec![

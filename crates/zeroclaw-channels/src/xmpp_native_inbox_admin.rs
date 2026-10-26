@@ -80,7 +80,7 @@ pub fn run(args: &[String]) -> Result<Value> {
             Phase::Returned => "returned",
         };
         return Ok(
-            json!({"operation":operation,"phase":phase,"device":record.device,"fingerprint":hex::encode(record.pin),"runtime":record.runtime,"review_token":hex::encode(record.review_token)}),
+            json!({"operation":operation,"phase":phase,"device":record.device,"fingerprint":hex::encode(record.pin),"runtime":record.runtime,"control":record.control,"review_token":hex::encode(record.review_token)}),
         );
     }
     let token: [u8; 32] = hex::decode(&args[7])?.try_into().map_err(|_| {

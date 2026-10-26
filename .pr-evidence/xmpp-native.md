@@ -37,15 +37,23 @@ storage faults, pending recovery before admission, and no automatic replay of
 admitted work after process exit. Offline administrative behavior is exercised
 through child test executables; this does not claim a shipped administrator CLI.
 
-Two shared-ingress regressions separately confirm that admission precedes hooks
+Three shared-ingress regressions separately confirm that admission precedes hooks
 and agent effects, including unowned approval routes, and that a hook rewrite
-retains the original channel receipt.
-The regular XMPP unit filter passed 60 tests, with four opt-in/child probes ignored
+retains the original channel receipt. Individual encrypted messages bypass
+coalescing, and returned controls keep a distinct encrypted processing reference
+that can pass explicit reviewed release without inventing an agent history.
+The regular XMPP unit filter passed 61 tests, with four opt-in/child probes ignored
 in that invocation; the network driver explicitly runs its ignored entrypoint.
 Strict feature-scoped Clippy and formatting passed. Dependency policy reported
 `advisories ok, bans ok, licenses ok, sources ok`; unmatched entries in the
 existing policy were explained by the selected feature graph and crypto upgrade.
 No advisory or license exemption was added.
+
+Review regressions also passed for transactional TLS-only state upgrade with
+replay preservation and refusal to overwrite partial/foreign identities.
+Injected control-return storage failures leave the input admitted and unknown.
+The network fixture sends input for another recipient and an unknown device
+before the valid round trip; those rejections must not disconnect the listener.
 
 ## Limits
 

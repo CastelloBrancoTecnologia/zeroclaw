@@ -51,7 +51,10 @@ fn mapped(tx: &Transaction<'_>, name: &str, id: u32) -> Result<[u8; 32]> {
         .iter()
         .filter(|(_, v)| v.as_u64() == Some(u64::from(id)))
         .collect();
-    ensure!(matches.len() == 1, "Unknown or ambiguous prekey ID");
+    if matches.is_empty() {
+        return Err(crate::xmpp_omemo::RejectedInbound.into());
+    }
+    ensure!(matches.len() == 1, "Ambiguous local prekey ID");
     STANDARD.decode(matches[0].0)?.try_into().map_err(|_| {
         ::zeroclaw_log::record!(
             ERROR,
@@ -199,17 +202,20 @@ pub fn receive_fresh_with(
         input.peer_device.into(),
         input.peer.into(),
     )?;
-    let material = Zeroizing::new(DoubleRatchet::decrypt_key(
-        &mut ratchet,
-        &exchange.raw_message_bytes,
-    )?);
+    let material = Zeroizing::new(
+        DoubleRatchet::decrypt_key(&mut ratchet, &exchange.raw_message_bytes)
+            .map_err(crate::xmpp_omemo::reject_input)?,
+    );
     ensure!(material.len() == 32, "Invalid legacy key material");
     let combined = [input.ciphertext, &material[16..]].concat();
-    let plaintext = Zeroizing::new(crypto::aes_gcm_decrypt(
-        &combined,
-        &AesGcmKey::from_slice(&material[..16]).context("Invalid payload key")?,
-        &GcmNonce::from_slice(input.nonce).context("Invalid payload IV")?,
-    )?);
+    let plaintext = Zeroizing::new(
+        crypto::aes_gcm_decrypt(
+            &combined,
+            &AesGcmKey::from_slice(&material[..16]).context("Invalid payload key")?,
+            &GcmNonce::from_slice(input.nonce).context("Invalid payload IV")?,
+        )
+        .map_err(crate::xmpp_omemo::reject_input)?,
+    );
     let session = LegacySession::from_fresh_recipient(ratchet)?;
     let encode = |bytes: &[u8]| Value::String(URL_SAFE.encode(bytes));
     let associated = [vec![5], peer_curve.to_vec(), vec![5], public.to_vec()].concat();

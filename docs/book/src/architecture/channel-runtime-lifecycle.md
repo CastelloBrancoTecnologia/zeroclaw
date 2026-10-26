@@ -56,7 +56,10 @@ stops dispatch; history-binding failure stops the turn. The return callback
 records only that shared processing returned, not successful tools, persisted
 history, socket delivery, or a human receipt. Interrupted admitted work remains
 unknown and must not be blindly replayed. Channels without durable ingress keep
-the default no-op callbacks.
+the default no-op callbacks. `requires_individual_ingress` opts durable messages
+out of debounce coalescing, preserving a history link for each executed input.
+`inbound_control_returned` records dispatcher control processing separately when
+there is no agent turn, without inventing an agent/history reference.
 
 Long-running channels and webhook-backed channels have different transport
 entry points, but they should converge on the same message shape:

@@ -30,6 +30,8 @@ struct Body {
     content: String,
     #[serde(default)]
     runtime: Option<RuntimeLink>,
+    #[serde(default)]
+    control: Option<String>,
 }
 impl Drop for Body {
     fn drop(&mut self) {
@@ -120,6 +122,7 @@ pub fn stage(
         own_device,
         content: std::str::from_utf8(content)?.into(),
         runtime: None,
+        control: None,
     };
     let serialized = Zeroizing::new(serde_json::to_string(&body)?);
     let sealed = cipher.seal(&serialized)?;
@@ -192,6 +195,8 @@ pub struct Record {
     #[cfg(test)]
     pub runtime: Option<RuntimeLink>,
     #[cfg(test)]
+    pub control: Option<String>,
+    #[cfg(test)]
     pub review_token: [u8; 32],
 }
 pub fn inspect(
@@ -232,6 +237,8 @@ pub fn inspect(
         #[cfg(test)]
         runtime: body.runtime.take(),
         #[cfg(test)]
+        control: body.control.take(),
+        #[cfg(test)]
         review_token: review_token(peer, id, &phase, &sealed),
     };
     tx.commit()?;
@@ -266,7 +273,9 @@ pub struct ReleaseReceipt {
     id: String,
     own: [u8; 32],
     own_device: u32,
-    pub runtime: RuntimeLink,
+    pub runtime: Option<RuntimeLink>,
+    #[serde(default)]
+    pub control: Option<String>,
     pub operator: String,
     pub evidence: String,
     pub source_token: [u8; 32],
@@ -310,10 +319,12 @@ pub fn release_reviewed_returned(
     let token = review_token(peer, id, &Phase::Returned, &sealed);
     ensure!(token == review.expected_token, "Ingress review is stale");
     let mut body = decode_body(cipher, account, peer, id, own, own_device, &sealed)?;
-    let runtime = body
-        .runtime
-        .take()
-        .context("Ingress lacks canonical runtime reference")?;
+    let runtime = body.runtime.take();
+    let control = body.control.take();
+    ensure!(
+        runtime.is_some() != control.is_some(),
+        "Ingress lacks an unambiguous processing reference"
+    );
     let seen: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM seen WHERE sender=?1 AND id=?2)",
         params![peer, id],
@@ -331,6 +342,7 @@ pub fn release_reviewed_returned(
         own,
         own_device,
         runtime,
+        control,
         operator: review.operator.into(),
         evidence: review.evidence.into(),
         source_token: token,
@@ -445,6 +457,10 @@ pub fn bind_runtime(
         "Runtime binding requires admitted ingress"
     );
     let mut body = decode_body(cipher, account, peer, id, own, own_device, &sealed)?;
+    ensure!(
+        body.control.is_none(),
+        "Ingress already bound to control processing"
+    );
     if let Some(existing) = &body.runtime {
         ensure!(existing == &link, "Canonical runtime reference changed");
         return Ok(());
@@ -468,6 +484,43 @@ pub fn bind_runtime(
 }
 pub fn returned(conn: &mut Connection, peer: &str, id: &str) -> Result<()> {
     ensure!(conn.execute("UPDATE native_omemo_inbox SET phase='returned' WHERE peer=?1 AND id=?2 AND phase='admitted'",params![peer,id])?==1,"No admitted ingress to finalize");
+    Ok(())
+}
+/// Commit the fact that a dispatcher control path returned, without inventing
+/// an agent or claiming an agent history exists. Unknown paths remain admitted.
+pub fn control_returned(
+    conn: &mut Connection,
+    cipher: &Arc<dyn InboxCipher>,
+    account: &str,
+    peer: &str,
+    id: &str,
+    control: &str,
+) -> Result<()> {
+    ensure!(
+        matches!(control, "stop" | "gate" | "event"),
+        "Unknown dispatcher control path"
+    );
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let (_, own, own_device) = identity(&tx, account)?;
+    let sealed: String = tx.query_row(
+        "SELECT sealed FROM native_omemo_inbox WHERE peer=?1 AND id=?2 AND phase='admitted'",
+        params![peer, id],
+        |r| r.get(0),
+    )?;
+    let mut body = decode_body(cipher, account, peer, id, own, own_device, &sealed)?;
+    ensure!(
+        body.runtime.is_none() && body.control.is_none(),
+        "Ingress already bound"
+    );
+    body.control = Some(control.into());
+    let serialized = Zeroizing::new(serde_json::to_string(&body)?);
+    let sealed = cipher.seal(&serialized)?;
+    ensure!(
+        sealed.starts_with("enc2:"),
+        "Control receipt must be encrypted"
+    );
+    ensure!(tx.execute("UPDATE native_omemo_inbox SET sealed=?1,phase='returned' WHERE peer=?2 AND id=?3 AND phase='admitted'",params![sealed,peer,id])?==1,"Control return raced");
+    tx.commit()?;
     Ok(())
 }
 
@@ -498,6 +551,7 @@ mod schema_tests {
             own_device: 202,
             content: "synthetic content".into(),
             runtime: None,
+            control: None,
         };
         let mut json = serde_json::to_value(&body)?;
         json.as_object_mut()

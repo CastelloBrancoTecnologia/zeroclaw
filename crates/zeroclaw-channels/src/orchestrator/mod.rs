@@ -8284,6 +8284,20 @@ struct IngressReceipt {
     message: zeroclaw_api::channel::ChannelMessage,
 }
 impl IngressReceipt {
+    async fn control_returned(&self, control: &str) {
+        if let Err(error) = self
+            .channel
+            .inbound_control_returned(&self.message, control)
+            .await
+        {
+            ::zeroclaw_log::record!(
+                ERROR,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                    .with_attrs(serde_json::json!({"error":error.to_string()})),
+                "Channel control return recording failed"
+            );
+        }
+    }
     fn new(channel: Arc<dyn Channel>, msg: &ChannelMessage) -> Self {
         let mut message = ChannelMessage::new(
             &msg.id,
@@ -12495,6 +12509,9 @@ async fn run_message_dispatch_loop_until_cancelled(
             )
             .await
             {
+                if let Some(receipt) = &ingress_receipt {
+                    receipt.control_returned("gate").await;
+                }
                 continue;
             }
         }
@@ -12508,6 +12525,9 @@ async fn run_message_dispatch_loop_until_cancelled(
         // channel registry above. The remaining path only dispatches events and
         // ordinary messages to an agent-owned runtime.
         if !msg.passive_context && dispatch_channel_sop_event(&router, &msg).await {
+            if let Some(receipt) = &ingress_receipt {
+                receipt.control_returned("event").await;
+            }
             continue;
         }
         // Fast path: /stop cancels every live turn of this sender scope — the
@@ -12648,6 +12668,9 @@ async fn run_message_dispatch_loop_until_cancelled(
                     "stop command: no registered channel found for reply"
                 );
             }
+            if let Some(receipt) = &ingress_receipt {
+                receipt.control_returned("stop").await;
+            }
             continue;
         }
 
@@ -12680,6 +12703,9 @@ async fn run_message_dispatch_loop_until_cancelled(
         // A passive observation starts no turn, so letting it into the
         // debouncer would let it merge into or replace a waiting batch.
         let msg = if msg.channel != "cli"
+            && !ingress_receipt
+                .as_ref()
+                .is_some_and(|receipt| receipt.channel.requires_individual_ingress())
             && !msg.passive_context
             && parse_runtime_command(&msg.channel, &msg.content).is_none()
         {
@@ -27119,6 +27145,20 @@ api_key = "anthropic-key"
     #[cfg(feature = "channel-xmpp")]
     #[async_trait::async_trait]
     impl Channel for RuntimeLinkProbe {
+        fn requires_individual_ingress(&self) -> bool {
+            true
+        }
+        async fn inbound_control_returned(
+            &self,
+            msg: &ChannelMessage,
+            control: &str,
+        ) -> anyhow::Result<()> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(("control".into(), msg.id.clone(), control.into()));
+            Ok(())
+        }
         fn name(&self) -> &str {
             "xmpp"
         }
@@ -27253,6 +27293,67 @@ api_key = "anthropic-key"
         }
     }
 
+    #[cfg(feature = "channel-xmpp")]
+    #[tokio::test]
+    async fn native_ingress_individual_messages_and_stop_keep_receipts() {
+        let channel = Arc::new(RuntimeLinkProbe {
+            events: std::sync::Mutex::new(Vec::new()),
+            fail_binding: false,
+        });
+        let mut config = zeroclaw_config::schema::Config::default();
+        config.channels.debounce_ms = 500;
+        let ctx = test_runtime_ctx_with_config_agent_and_provider_ref(
+            channel.clone(),
+            Arc::new(DummyModelProvider),
+            config,
+            zeroclaw_config::schema::AliasedAgentConfig::default(),
+            "test-provider",
+            None,
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel(3);
+        for id in ["first", "second"] {
+            tx.send(ChannelMessage::new(
+                id,
+                "alice@example.test",
+                "alice@example.test",
+                "ordinary input",
+                "xmpp",
+                0,
+            ))
+            .await
+            .unwrap();
+        }
+        drop(tx);
+        run_message_dispatch_loop(rx, AgentRouter::single(ctx.clone()), 1).await;
+        {
+            let events = channel.events.lock().unwrap();
+            for id in ["first", "second"] {
+                assert!(events.iter().any(|e| e.0 == "bind" && e.1 == id));
+                assert!(events.iter().any(|e| e.0 == "returned" && e.1 == id));
+            }
+        }
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tx.send(ChannelMessage::new(
+            "stop",
+            "alice@example.test",
+            "alice@example.test",
+            "/stop",
+            "xmpp",
+            0,
+        ))
+        .await
+        .unwrap();
+        drop(tx);
+        run_message_dispatch_loop(rx, AgentRouter::single(ctx), 1).await;
+        assert!(
+            channel
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| e.0 == "control" && e.1 == "stop" && e.2 == "stop")
+        );
+    }
     // END ISOLATED NATIVE CHANNEL DISPATCH HELPER
 
     #[cfg(feature = "channel-matrix")]

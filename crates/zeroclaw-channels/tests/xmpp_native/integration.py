@@ -127,6 +127,16 @@ async def main():
                 for name in ['mallory','alice']:
                     message=by_name[name].make_message(mto='bob@example.test',mbody='must never reach agent',mtype='chat');message.send()
                 forged=by_name['mallory'].make_message(mto='bob@example.test',mtype='chat');forged['id']='forged';forged.xml.append(ET.fromstring(f['first_xml' if fresh else 'next_xml']));forged.send()
+                # Allowed accounts can send traffic for another recipient/device.
+                # Such untrusted input must not reconnect the channel or drop replies.
+                for variant in ('missing-recipient', 'unknown-device'):
+                    payload=ET.fromstring(f['first_xml' if fresh else 'next_xml'])
+                    header=payload.find('{eu.siacs.conversations.axolotl}header')
+                    if variant=='missing-recipient':
+                        for key in header.findall('{eu.siacs.conversations.axolotl}key'):key.set('rid','999999')
+                    else:header.set('sid','999999')
+                    rejected=by_name['alice'].make_message(mto='bob@example.test',mtype='chat')
+                    rejected['id']='rejected-'+variant;rejected.xml.append(payload);rejected.send()
                 message=by_name['alice'].make_message(mto='bob@example.test',mtype='chat');message['id']='actual-channel-inbound';message.xml.append(ET.fromstring(f['first_xml' if fresh else 'next_xml']));message.send()
                 duplicate=by_name['alice'].make_message(mto='bob@example.test',mtype='chat');duplicate['id']='actual-channel-inbound';duplicate.xml.append(ET.fromstring(f['first_xml' if fresh else 'next_xml']));duplicate.send()
                 try:await asyncio.wait_for(done,15)
