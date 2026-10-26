@@ -839,6 +839,7 @@ struct PendingTurn {
     /// Immutable queue-ingress id used by picker delivery bookkeeping even
     /// when a modifying hook replaces `msg.id` before final lane admission.
     delivery_message_id: String,
+    ingress_receipt: Option<IngressReceipt>,
     /// RAII claim held from queue dequeue through every hook, lane, and worker
     /// exit. Dropping an abandoned turn settles its picker registration.
     dispatch_ownership: ModelPickerDispatchOwnership,
@@ -8276,7 +8277,105 @@ async fn process_channel_message(
     .await;
 }
 
+// Preserve queue-ingress identity across hooks without copying message bodies.
+#[derive(Clone)]
+struct IngressReceipt {
+    channel: Arc<dyn Channel>,
+    message: zeroclaw_api::channel::ChannelMessage,
+}
+impl IngressReceipt {
+    fn new(channel: Arc<dyn Channel>, msg: &ChannelMessage) -> Self {
+        let mut message = ChannelMessage::new(
+            &msg.id,
+            &msg.sender,
+            &msg.reply_target,
+            "",
+            &msg.channel,
+            msg.timestamp,
+        );
+        message.channel_alias = msg.channel_alias.clone();
+        Self { channel, message }
+    }
+}
+#[cfg(test)]
 async fn process_channel_message_with_delivery_id(
+    ctx: Arc<ChannelRuntimeContext>,
+    msg: zeroclaw_api::channel::ChannelMessage,
+    cancellation_token: CancellationToken,
+    delivery_message_id: String,
+    turn_lease: Option<Arc<zeroclaw_runtime::live_config_authority::AgentTurnLease>>,
+) {
+    // Direct callers without the dispatch provenance may acknowledge only when
+    // no modifying hook could have changed the original receipt identity.
+    let receipt = if ctx.hooks.is_none() {
+        find_channel_for_message(&ctx.channels_by_name, &msg)
+            .cloned()
+            .map(|channel| {
+                let mut original = msg.clone();
+                original.id = delivery_message_id.clone();
+                IngressReceipt::new(channel, &original)
+            })
+    } else {
+        None
+    };
+    process_channel_message_with_ingress(
+        ctx,
+        msg,
+        cancellation_token,
+        delivery_message_id,
+        turn_lease,
+        receipt,
+    )
+    .await;
+}
+async fn process_channel_message_with_ingress(
+    ctx: Arc<ChannelRuntimeContext>,
+    msg: zeroclaw_api::channel::ChannelMessage,
+    cancellation_token: CancellationToken,
+    delivery_message_id: String,
+    turn_lease: Option<Arc<zeroclaw_runtime::live_config_authority::AgentTurnLease>>,
+    receipt: Option<IngressReceipt>,
+) {
+    if cancellation_token.is_cancelled() {
+        return;
+    }
+    if let Some(receipt) = &receipt {
+        let history_key = runtime_conversation_history_key(ctx.as_ref(), &msg);
+        if let Err(error) = receipt
+            .channel
+            .inbound_runtime_bound(&receipt.message, ctx.agent_alias.as_str(), &history_key)
+            .await
+        {
+            ::zeroclaw_log::record!(ERROR,::zeroclaw_log::Event::new(module_path!(),::zeroclaw_log::Action::Fail).with_outcome(::zeroclaw_log::EventOutcome::Failure).with_attrs(serde_json::json!({"stage":"inbound_runtime_binding","error":error.to_string()})),"Channel ingress runtime binding failed");
+            return;
+        }
+    }
+    let cancelled = cancellation_token.clone();
+    process_channel_message_with_delivery_id_inner(
+        ctx,
+        msg,
+        cancellation_token,
+        delivery_message_id,
+        turn_lease,
+    )
+    .await;
+    if !cancelled.is_cancelled()
+        && let Some(receipt) = receipt
+        && let Err(error) = receipt.channel.inbound_returned(&receipt.message).await
+    {
+        ::zeroclaw_log::record!(
+            ERROR,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                .with_attrs(
+                    serde_json::json!({"stage":"inbound_returned","error":error.to_string()})
+                ),
+            "Channel ingress return receipt failed"
+        );
+    }
+}
+
+async fn process_channel_message_with_delivery_id_inner(
     ctx: Arc<ChannelRuntimeContext>,
     msg: zeroclaw_api::channel::ChannelMessage,
     cancellation_token: CancellationToken,
@@ -11640,6 +11739,7 @@ async fn run_conversation_turn(
         ctx,
         msg,
         delivery_message_id,
+        ingress_receipt,
         dispatch_ownership,
         registration,
         pending_work,
@@ -11648,12 +11748,13 @@ async fn run_conversation_turn(
     let execution_permit = permit;
 
     let Some(registration) = registration else {
-        process_channel_message_with_delivery_id(
+        process_channel_message_with_ingress(
             ctx,
             msg,
             generation_cancel,
             delivery_message_id,
             Some(Arc::clone(&turn_lease)),
+            ingress_receipt,
         )
         .await;
         dispatch_ownership.release();
@@ -11672,12 +11773,13 @@ async fn run_conversation_turn(
         return;
     }
 
-    process_channel_message_with_delivery_id(
+    process_channel_message_with_ingress(
         ctx,
         msg,
         registration.cancellation.clone(),
         delivery_message_id,
         Some(Arc::clone(&turn_lease)),
+        ingress_receipt,
     )
     .await;
     drop(registration);
@@ -12329,6 +12431,23 @@ async fn run_message_dispatch_loop_until_cancelled(
         // this exact ingress id. Ordinary messages create an inert guard.
         let delivery_message_id = msg.id.clone();
         let dispatch_ownership = ModelPickerDispatchOwnership::hold(&delivery_message_id);
+        // Only the canonical route may admit ingress for its channel instance.
+        let mut ingress_receipt = None;
+        let ingress_ctx = router.resolve(&msg);
+        if let Some(ctx) = ingress_ctx
+            && let Some(channel) = find_channel_for_message(&ctx.channels_by_name, &msg).cloned()
+        {
+            match channel.admit_inbound(&msg).await {
+                Ok(true) => {
+                    ingress_receipt = Some(IngressReceipt::new(channel.clone(), &msg));
+                }
+                Ok(false) => continue,
+                Err(error) => {
+                    ::zeroclaw_log::record!(ERROR,::zeroclaw_log::Event::new(module_path!(),::zeroclaw_log::Action::Fail).with_outcome(::zeroclaw_log::EventOutcome::Failure).with_attrs(serde_json::json!({"stage":"inbound_admission","error":error.to_string()})),"Durable channel admission failed");
+                    continue;
+                }
+            }
+        }
         // Gate answers (button-click markers / `approve <ref>` text replies)
         // resolve a PARKED run and must never start one, so they are consumed
         // BEFORE agent ownership lookup. A configured approval route may be
@@ -12670,6 +12789,7 @@ async fn run_message_dispatch_loop_until_cancelled(
                             ctx: Arc::clone(&ctx),
                             msg,
                             delivery_message_id,
+                            ingress_receipt,
                             dispatch_ownership,
                             registration,
                             pending_work,
@@ -12742,6 +12862,7 @@ async fn run_message_dispatch_loop_until_cancelled(
                     ctx: Arc::clone(&ctx),
                     msg,
                     delivery_message_id,
+                    ingress_receipt,
                     dispatch_ownership,
                     registration,
                     pending_work,
@@ -13790,12 +13911,27 @@ fn build_channel_by_id(
                 .get("default")
                 .context("XMPP channel is not configured")?;
             let live = config_arc.clone();
-            Ok(Arc::new(crate::xmpp::XmppChannel::new(
-                xmpp.clone(),
-                "default".into(),
-                config.data_dir.clone(),
-                Arc::new(move || live.read().channel_external_peers("xmpp", "default")),
-            )))
+            Ok(Arc::new(
+                crate::xmpp::XmppChannel::new(
+                    xmpp.clone(),
+                    "default".into(),
+                    config.data_dir.clone(),
+                    Arc::new(move || live.read().channel_external_peers("xmpp", "default")),
+                )
+                .with_pin_resolver({
+                    let live = config_arc.clone();
+                    Arc::new(move || {
+                        live.read()
+                            .channels
+                            .xmpp
+                            .get("default")
+                            .filter(|c| c.enabled && c.omemo_enabled)
+                            .map(|c| c.omemo_trusted_devices.clone())
+                            .unwrap_or_default()
+                    })
+                })
+                .with_inbox_vault(config.config_path.parent().map(|p| p.to_path_buf())),
+            ))
         }
         #[cfg(not(feature = "channel-xmpp"))]
         "xmpp" => anyhow::bail!("XMPP requires the channel-xmpp feature"),
@@ -15452,12 +15588,28 @@ fn collect_configured_channels_with_authority(
         channels.push(ConfiguredChannel {
             display_name: "XMPP",
             alias: Some(alias.clone()),
-            channel: Arc::new(crate::xmpp::XmppChannel::new(
-                xmpp.clone(),
-                alias.clone(),
-                config.data_dir.clone(),
-                Arc::new(move || live.read().channel_external_peers("xmpp", &peer_alias)),
-            )),
+            channel: Arc::new(
+                crate::xmpp::XmppChannel::new(
+                    xmpp.clone(),
+                    alias.clone(),
+                    config.data_dir.clone(),
+                    Arc::new(move || live.read().channel_external_peers("xmpp", &peer_alias)),
+                )
+                .with_pin_resolver({
+                    let live = config_arc.clone();
+                    let alias = alias.clone();
+                    Arc::new(move || {
+                        live.read()
+                            .channels
+                            .xmpp
+                            .get(&alias)
+                            .filter(|c| c.enabled && c.omemo_enabled)
+                            .map(|c| c.omemo_trusted_devices.clone())
+                            .unwrap_or_default()
+                    })
+                })
+                .with_inbox_vault(config.config_path.parent().map(|p| p.to_path_buf())),
+            ),
         });
     }
 
@@ -26762,6 +26914,324 @@ api_key = "anthropic-key"
             sop_driver_sink: None,
         })
     }
+
+    // BEGIN ISOLATED NATIVE CHANNEL DISPATCH HELPER
+    #[cfg(feature = "channel-xmpp")]
+    struct RewriteFixtureMessageId;
+    #[cfg(feature = "channel-xmpp")]
+    #[async_trait::async_trait]
+    impl zeroclaw_runtime::hooks::HookHandler for RewriteFixtureMessageId {
+        fn name(&self) -> &str {
+            "synthetic-network-receipt-id-rewrite"
+        }
+        async fn on_message_received(
+            &self,
+            mut msg: ChannelMessage,
+        ) -> zeroclaw_runtime::hooks::HookResult<ChannelMessage> {
+            msg.id = "hook-replaced-network-id".into();
+            zeroclaw_runtime::hooks::HookResult::Continue(msg)
+        }
+    }
+    #[cfg(feature = "channel-xmpp")]
+    pub(crate) async fn dispatch_native_channel_fixture(
+        channel: Arc<dyn Channel>,
+        msg: zeroclaw_api::channel::ChannelMessage,
+    ) -> anyhow::Result<()> {
+        let mut hooks = zeroclaw_runtime::hooks::HookRunner::new();
+        hooks.register(Box::new(RewriteFixtureMessageId));
+        let mut ctx = test_runtime_ctx_with_config_agent_and_provider_ref(
+            channel.clone(),
+            Arc::new(DummyModelProvider),
+            zeroclaw_config::schema::Config::default(),
+            zeroclaw_config::schema::AliasedAgentConfig::default(),
+            "test-provider",
+            Some(Arc::new(hooks)),
+        );
+        let inner = Arc::get_mut(&mut ctx).ok_or_else(|| {
+            ::zeroclaw_log::record!(
+                ERROR,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail),
+                "Fixture context unexpectedly shared"
+            );
+            anyhow::Error::msg("Fixture context unexpectedly shared")
+        })?;
+        inner.agent_alias = Arc::new("fixture-owner".into());
+        inner.channels_by_name = Arc::new(HashMap::from([("xmpp.private".into(), channel)]));
+        let router = AgentRouter::multi(
+            HashMap::from([("fixture-owner".into(), ctx)]),
+            HashMap::from([
+                ("xmpp.private".into(), "fixture-owner".into()),
+                ("xmpp".into(), "fixture-owner".into()),
+            ]),
+            None,
+            None,
+            None,
+        );
+        anyhow::ensure!(
+            router
+                .resolve(&msg)
+                .is_some_and(|ctx| ctx.agent_alias.as_str() == "fixture-owner"),
+            "Wrong configured owner"
+        );
+        let mut unowned = msg.clone();
+        unowned.id = "unowned-alias-must-not-fall-back".into();
+        unowned.channel_alias = Some("unowned".into());
+        anyhow::ensure!(
+            router.resolve(&unowned).is_none(),
+            "Unowned alias fell back to platform owner"
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        tx.send(unowned).await?;
+        tx.send(msg).await?;
+        drop(tx);
+        run_message_dispatch_loop(rx, router, 2).await;
+        Ok(())
+    }
+
+    #[cfg(feature = "channel-xmpp")]
+    struct DeniedIngressProbe {
+        admissions: std::sync::atomic::AtomicUsize,
+        sends: std::sync::atomic::AtomicUsize,
+    }
+    #[cfg(feature = "channel-xmpp")]
+    impl zeroclaw_api::attribution::Attributable for DeniedIngressProbe {
+        fn role(&self) -> zeroclaw_api::attribution::Role {
+            zeroclaw_api::attribution::Role::Channel(zeroclaw_api::attribution::ChannelKind::Xmpp)
+        }
+        fn alias(&self) -> &str {
+            "private"
+        }
+    }
+    #[cfg(feature = "channel-xmpp")]
+    #[async_trait::async_trait]
+    impl Channel for DeniedIngressProbe {
+        fn name(&self) -> &str {
+            "xmpp"
+        }
+        async fn send(&self, _: &SendMessage) -> anyhow::Result<()> {
+            self.sends.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn listen(&self, _: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn admit_inbound(&self, _: &ChannelMessage) -> anyhow::Result<bool> {
+            self.admissions.fetch_add(1, Ordering::SeqCst);
+            Ok(false)
+        }
+    }
+    #[cfg(feature = "channel-xmpp")]
+    struct IngressEffectHook(Arc<std::sync::atomic::AtomicUsize>);
+    #[cfg(feature = "channel-xmpp")]
+    #[async_trait::async_trait]
+    impl zeroclaw_runtime::hooks::HookHandler for IngressEffectHook {
+        fn name(&self) -> &str {
+            "synthetic-ingress-effect"
+        }
+        async fn on_message_received(
+            &self,
+            message: ChannelMessage,
+        ) -> zeroclaw_runtime::hooks::HookResult<ChannelMessage> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            zeroclaw_runtime::hooks::HookResult::Continue(message)
+        }
+    }
+    #[cfg(feature = "channel-xmpp")]
+    #[tokio::test]
+    async fn native_ingress_admission_precedes_hooks_and_agent_effects() {
+        let channel = Arc::new(DeniedIngressProbe {
+            admissions: std::sync::atomic::AtomicUsize::new(0),
+            sends: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut hooks = zeroclaw_runtime::hooks::HookRunner::new();
+        hooks.register(Box::new(IngressEffectHook(effects.clone())));
+        let ctx = test_runtime_ctx_with_config_agent_and_provider_ref(
+            channel.clone(),
+            Arc::new(DummyModelProvider),
+            zeroclaw_config::schema::Config::default(),
+            zeroclaw_config::schema::AliasedAgentConfig::default(),
+            "test-provider",
+            Some(Arc::new(hooks)),
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tx.send(ChannelMessage::new(
+            "denied-durable-ingress",
+            "alice@example.test",
+            "alice@example.test",
+            "ordinary synthetic input",
+            "xmpp",
+            0,
+        ))
+        .await
+        .unwrap();
+        drop(tx);
+        run_message_dispatch_loop(rx, AgentRouter::single(ctx), 1).await;
+        assert_eq!(channel.admissions.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            effects.load(Ordering::SeqCst),
+            0,
+            "Denied ingress reached a modifying hook"
+        );
+        assert_eq!(
+            channel.sends.load(Ordering::SeqCst),
+            0,
+            "Denied ingress emitted a response"
+        );
+    }
+
+    #[cfg(feature = "channel-xmpp")]
+    struct RuntimeLinkProbe {
+        events: std::sync::Mutex<Vec<(String, String, String)>>,
+        fail_binding: bool,
+    }
+    #[cfg(feature = "channel-xmpp")]
+    impl zeroclaw_api::attribution::Attributable for RuntimeLinkProbe {
+        fn role(&self) -> zeroclaw_api::attribution::Role {
+            zeroclaw_api::attribution::Role::Channel(zeroclaw_api::attribution::ChannelKind::Xmpp)
+        }
+        fn alias(&self) -> &str {
+            "private"
+        }
+    }
+    #[cfg(feature = "channel-xmpp")]
+    #[async_trait::async_trait]
+    impl Channel for RuntimeLinkProbe {
+        fn name(&self) -> &str {
+            "xmpp"
+        }
+        async fn send(&self, _: &SendMessage) -> anyhow::Result<()> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(("send".into(), String::new(), String::new()));
+            Ok(())
+        }
+        async fn listen(&self, _: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn admit_inbound(&self, msg: &ChannelMessage) -> anyhow::Result<bool> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(("admit".into(), msg.id.clone(), msg.sender.clone()));
+            Ok(true)
+        }
+        async fn inbound_runtime_bound(
+            &self,
+            msg: &ChannelMessage,
+            _: &str,
+            history: &str,
+        ) -> anyhow::Result<()> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(("bind".into(), msg.id.clone(), history.into()));
+            anyhow::ensure!(!self.fail_binding, "synthetic canonical reference failure");
+            Ok(())
+        }
+        async fn inbound_returned(&self, msg: &ChannelMessage) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push((
+                "returned".into(),
+                msg.id.clone(),
+                msg.sender.clone(),
+            ));
+            Ok(())
+        }
+    }
+    #[cfg(feature = "channel-xmpp")]
+    struct RewriteIngressProbe;
+    #[cfg(feature = "channel-xmpp")]
+    #[async_trait::async_trait]
+    impl zeroclaw_runtime::hooks::HookHandler for RewriteIngressProbe {
+        fn name(&self) -> &str {
+            "synthetic-receipt-routing-rewrite"
+        }
+        async fn on_message_received(
+            &self,
+            mut msg: ChannelMessage,
+        ) -> zeroclaw_runtime::hooks::HookResult<ChannelMessage> {
+            msg.id = "hook-replaced-id".into();
+            msg.sender = "hook-routed-sender@example.test".into();
+            msg.reply_target = msg.sender.clone();
+            zeroclaw_runtime::hooks::HookResult::Continue(msg)
+        }
+    }
+    #[cfg(feature = "channel-xmpp")]
+    #[tokio::test]
+    async fn native_ingress_runtime_reference_preserves_original_receipt_through_hook() {
+        for fail_binding in [false, true] {
+            let channel = Arc::new(RuntimeLinkProbe {
+                events: std::sync::Mutex::new(Vec::new()),
+                fail_binding,
+            });
+            let mut hooks = zeroclaw_runtime::hooks::HookRunner::new();
+            hooks.register(Box::new(RewriteIngressProbe));
+            let ctx = test_runtime_ctx_with_config_agent_and_provider_ref(
+                channel.clone(),
+                Arc::new(DummyModelProvider),
+                zeroclaw_config::schema::Config::default(),
+                zeroclaw_config::schema::AliasedAgentConfig::default(),
+                "test-provider",
+                Some(Arc::new(hooks)),
+            );
+            let msg = ChannelMessage::new(
+                "original-inbound-id",
+                "alice@example.test",
+                "alice@example.test",
+                "ordinary synthetic input",
+                "xmpp",
+                0,
+            );
+            let mut rewritten = msg.clone();
+            rewritten.sender = "hook-routed-sender@example.test".into();
+            rewritten.reply_target = rewritten.sender.clone();
+            let expected_history = runtime_conversation_history_key(ctx.as_ref(), &rewritten);
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tx.send(msg).await.unwrap();
+            drop(tx);
+            run_message_dispatch_loop(rx, AgentRouter::single(ctx), 1).await;
+            let events = channel.events.lock().unwrap();
+            assert_eq!(
+                events[0],
+                (
+                    "admit".into(),
+                    "original-inbound-id".into(),
+                    "alice@example.test".into()
+                )
+            );
+            assert_eq!(
+                events[1],
+                (
+                    "bind".into(),
+                    "original-inbound-id".into(),
+                    expected_history
+                )
+            );
+            if fail_binding {
+                assert_eq!(
+                    events.len(),
+                    2,
+                    "Binding failure reached response or return receipt"
+                );
+            } else {
+                assert!(
+                    events.iter().any(|e| e.0 == "send"),
+                    "Shared turn did not emit its response"
+                );
+                assert_eq!(
+                    events.last().unwrap(),
+                    &(
+                        "returned".into(),
+                        "original-inbound-id".into(),
+                        "alice@example.test".into()
+                    )
+                );
+            }
+        }
+    }
+
+    // END ISOLATED NATIVE CHANNEL DISPATCH HELPER
 
     #[cfg(feature = "channel-matrix")]
     pub(crate) async fn process_message_with_dummy_provider(
@@ -40492,6 +40962,7 @@ BTC is currently around $65,000 based on latest tool output."#
             msg,
             dispatch_ownership: ModelPickerDispatchOwnership::hold(&delivery_message_id),
             delivery_message_id,
+            ingress_receipt: None,
             registration: Some(registration),
             pending_work,
         });
@@ -40556,6 +41027,7 @@ BTC is currently around $65,000 based on latest tool output."#
             msg,
             dispatch_ownership: ModelPickerDispatchOwnership::hold(&delivery_message_id),
             delivery_message_id,
+            ingress_receipt: None,
             registration: None,
             pending_work: Arc::clone(&budget).try_acquire_owned().unwrap(),
         });
@@ -45066,6 +45538,7 @@ BTC is currently around $65,000 based on latest tool output."#
             msg: selection.clone(),
             dispatch_ownership: ModelPickerDispatchOwnership::hold(&delivery_message_id),
             delivery_message_id,
+            ingress_receipt: None,
             registration: Some(registration),
             pending_work,
         });

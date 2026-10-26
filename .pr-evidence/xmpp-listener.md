@@ -1,3 +1,8 @@
+> Historical compatibility-worker evidence: this records the revision named below.
+> The current transport is native Rust. Current reproduction steps are in
+> `crates/zeroclaw-channels/tests/xmpp_native/README.md`; the retired Python
+> bridge runners and `ZEROCLAW_XMPP_PYTHON` are not current runtime setup.
+
 # Assembled XMPP channel conversation proof
 
 Tested public revision: `37275ff8c9177f0d482695952ad9238b1fc13031`.

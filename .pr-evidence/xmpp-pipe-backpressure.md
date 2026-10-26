@@ -1,6 +1,11 @@
+> Historical compatibility-worker evidence: this records the revision named below.
+> The current transport is native Rust. Current reproduction steps are in
+> `crates/zeroclaw-channels/tests/xmpp_native/README.md`; the retired Python
+> bridge runners and `ZEROCLAW_XMPP_PYTHON` are not current runtime setup.
+
 # Bidirectional pipe backpressure regression
 
-Review finding: https://github.com/zeroclaw-labs/zeroclaw/pull/11847#discussion_r4355334195
+Review finding: [bidirectional pipe deadlock](https://github.com/zeroclaw-labs/zeroclaw/pull/11847#discussion_r4355334195)
 
 The listener previously awaited complete stdin writes inside its select branch, so it could not drain stdout while a large outgoing frame was blocked. The Python worker also wrote stdout synchronously on its event loop.
 

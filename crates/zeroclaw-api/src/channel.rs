@@ -899,6 +899,27 @@ pub trait Channel: Send + Sync + crate::attribution::Attributable {
     /// Human-readable channel name
     fn name(&self) -> &str;
 
+    /// Atomically admit durable ingress before runtime work. False suppresses a replay.
+    /// Default channels keep their existing behavior. An admitted unknown outcome
+    /// must never be blindly replayed after a crash.
+    async fn admit_inbound(&self, _message: &ChannelMessage) -> anyhow::Result<bool> {
+        Ok(true)
+    }
+    /// Records only that shared processing returned, not action or delivery success.
+    async fn inbound_returned(&self, _message: &ChannelMessage) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Bind original ingress to the canonical runtime history; no execution status copy.
+    async fn inbound_runtime_bound(
+        &self,
+        _message: &ChannelMessage,
+        _agent: &str,
+        _history_key: &str,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Send a message through this channel
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()>;
 

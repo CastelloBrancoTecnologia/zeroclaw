@@ -47,6 +47,17 @@ mini-orchestrator.
 
 ## Inbound shape
 
+Channels with durable ingress can implement `Channel::admit_inbound`,
+`inbound_runtime_bound`, and `inbound_returned`. The dispatch queue admits the
+original message before hooks or agent effects, then binds that receipt to the
+runtime-selected agent/history before turn processing. Hook rewrites must not
+replace the original receipt identity. Admission failure or an existing receipt
+stops dispatch; history-binding failure stops the turn. The return callback
+records only that shared processing returned, not successful tools, persisted
+history, socket delivery, or a human receipt. Interrupted admitted work remains
+unknown and must not be blindly replayed. Channels without durable ingress keep
+the default no-op callbacks.
+
 Long-running channels and webhook-backed channels have different transport
 entry points, but they should converge on the same message shape:
 

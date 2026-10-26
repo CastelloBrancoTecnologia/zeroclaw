@@ -1,3 +1,8 @@
+> Historical compatibility-worker evidence: this records the revision named below.
+> The current transport is native Rust. Current reproduction steps are in
+> `crates/zeroclaw-channels/tests/xmpp_native/README.md`; the retired Python
+> bridge runners and `ZEROCLAW_XMPP_PYTHON` are not current runtime setup.
+
 # XMPP channel verification
 
 The screenshots use the real WebUI renderer with a local API fixture. Accounts,
@@ -27,7 +32,7 @@ configuration steps in the channel guide for manual reproduction.
 
 ## Transport
 
-The opt-in `crates/zeroclaw-channels/tests/xmpp_bridge_integration.py` runner was
+The opt-in retired Python integration runner runner was
 exercised against an isolated Prosody 13 server on loopback with disposable
 accounts, PEP/pubsub, Direct TLS and mandatory STARTTLS listeners, and a
 temporary CA trusted only by the test processes. It exercises the actual

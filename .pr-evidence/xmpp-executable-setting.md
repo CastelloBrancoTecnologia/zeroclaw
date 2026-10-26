@@ -1,3 +1,8 @@
+> Historical compatibility-worker evidence: this records the revision named below.
+> The current transport is native Rust. Current reproduction steps are in
+> `crates/zeroclaw-channels/tests/xmpp_native/README.md`; the retired Python
+> bridge runners and `ZEROCLAW_XMPP_PYTHON` are not current runtime setup.
+
 # XMPP executable setting hardening
 
 The channel schema no longer contains `python_path`; the supported config setter rejects it. An old serialized value is ignored rather than executed. The compatibility worker resolves its interpreter from the trusted daemon process environment (`ZEROCLAW_XMPP_PYTHON`, default `python3`), never from channel settings. Existing virtualenv operators must migrate this setting to the service environment before upgrading.
