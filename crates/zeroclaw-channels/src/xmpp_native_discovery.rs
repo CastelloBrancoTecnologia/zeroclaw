@@ -4,6 +4,17 @@ use std::collections::VecDeque;
 use tokio_xmpp::minidom::Element;
 const PUBSUB: &str = "http://jabber.org/protocol/pubsub";
 const LEGACY: &str = "eu.siacs.conversations.axolotl";
+fn rejected_reply(expected: &jid::BareJid, own: &jid::BareJid) -> anyhow::Error {
+    if expected != own {
+        return crate::xmpp_omemo::RejectedInbound.into();
+    }
+    ::zeroclaw_log::record!(
+        ERROR,
+        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail),
+        "Invalid own-account discovery or publication reply"
+    );
+    anyhow::Error::msg("Invalid own-account discovery or publication reply")
+}
 fn response_sender(from: Option<&jid::Jid>, expected: &jid::BareJid, own: &jid::BareJid) -> bool {
     match from {
         Some(from) => {
@@ -53,11 +64,11 @@ where
                 }) if reply == id => {
                     ensure!(
                         response_sender(from.as_ref(), expected, own),
-                        "Discovery response sender mismatch"
+                        rejected_reply(expected, own)
                     );
                     ensure!(
                         to.as_ref().is_none_or(|j| j.to_bare() == *own),
-                        "Discovery response recipient mismatch"
+                        rejected_reply(expected, own)
                     );
                     return Ok(Reply::Result(payload));
                 }
@@ -76,11 +87,11 @@ where
                         }
                         ensure!(
                             response_sender(from.as_ref(), expected, own),
-                            "Discovery error sender mismatch"
+                            rejected_reply(expected, own)
                         );
                         ensure!(
                             to.as_ref().is_none_or(|j| j.to_bare() == *own),
-                            "Discovery error recipient mismatch"
+                            rejected_reply(expected, own)
                         );
                     }
                     let element = Element::from(iq);
@@ -90,7 +101,7 @@ where
                             e.get_child("item-not-found", "urn:ietf:params:xml:ns:xmpp-stanzas")
                                 .is_some()
                         });
-                    ensure!(missing && absent, "XMPP discovery or publication rejected");
+                    ensure!(missing && absent, rejected_reply(expected, own));
                     return Ok(Reply::Absent);
                 }
                 stanza => {
@@ -101,7 +112,13 @@ where
         }
     })
     .await
-    .context("XMPP discovery deadline exceeded")?
+    .map_err(|error| {
+        if expected != own {
+            crate::xmpp_omemo::RejectedInbound.into()
+        } else {
+            anyhow::Error::new(error).context("XMPP discovery deadline exceeded")
+        }
+    })?
 }
 async fn fetch<R>(
     source: &mut R,
@@ -130,35 +147,43 @@ where
         id: id.clone(),
         payload,
     };
-    let payload = match exchange(source, requests, pending, iq, peer, own, &id, missing).await? {
-        Reply::Absent => return Ok(None),
-        Reply::Result(Some(payload)) => payload,
-        Reply::Result(None) => bail!("Missing discovery payload"),
-    };
-    ensure!(
-        payload.is("pubsub", PUBSUB) && payload.children().count() == 1,
-        "Ambiguous discovery result"
-    );
-    let items = payload
-        .get_child("items", PUBSUB)
-        .context("Missing discovery items")?;
-    ensure!(
-        items.attr("node") == Some(node) && items.children().count() == 1,
-        "Wrong or ambiguous discovery node"
-    );
-    let item = items
-        .get_child("item", PUBSUB)
-        .context("Missing discovery item")?;
-    ensure!(
-        item.attr("id") == Some("current") && item.children().count() == 1,
-        "Unexpected discovery item"
-    );
-    let value = item
-        .get_child(name, LEGACY)
-        .context("Missing discovery content")?;
-    let mut xml = Vec::new();
-    value.write_to(&mut xml)?;
-    Ok(Some(String::from_utf8(xml)?))
+    let reply = exchange(source, requests, pending, iq, peer, own, &id, missing).await?;
+    let parsed = (|| -> anyhow::Result<Option<String>> {
+        let payload = match reply {
+            Reply::Absent => return Ok(None),
+            Reply::Result(Some(payload)) => payload,
+            Reply::Result(None) => bail!("Missing discovery payload"),
+        };
+        ensure!(
+            payload.is("pubsub", PUBSUB) && payload.children().count() == 1,
+            "Ambiguous discovery result"
+        );
+        let items = payload
+            .get_child("items", PUBSUB)
+            .context("Missing discovery items")?;
+        ensure!(
+            items.attr("node") == Some(node) && items.children().count() == 1,
+            "Wrong or ambiguous discovery node"
+        );
+        let item = items
+            .get_child("item", PUBSUB)
+            .context("Missing discovery item")?;
+        ensure!(
+            item.attr("id") == Some("current") && item.children().count() == 1,
+            "Unexpected discovery item"
+        );
+        let value = item
+            .get_child(name, LEGACY)
+            .context("Missing discovery content")?;
+        let mut xml = Vec::new();
+        value.write_to(&mut xml)?;
+        Ok(Some(String::from_utf8(xml)?))
+    })();
+    if peer != own {
+        parsed.map_err(crate::xmpp_omemo::reject_input)
+    } else {
+        parsed
+    }
 }
 async fn publish<R>(
     source: &mut R,

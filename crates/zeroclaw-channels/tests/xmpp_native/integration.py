@@ -1,8 +1,9 @@
 """Actual encrypted XmppChannel + shared runtime on loopback synthetic accounts."""
-import argparse,asyncio,atexit,hashlib,json,logging,os,pathlib,signal,ssl,tempfile,time
+import argparse,asyncio,atexit,base64,hashlib,json,logging,os,pathlib,signal,ssl,tempfile,time
 from xml.etree import ElementTree as ET
 from types import SimpleNamespace
 from slixmpp import ClientXMPP
+from slixmpp.exceptions import IqError
 from slixmpp.xmlstream.handler import CoroutineCallback
 from slixmpp.xmlstream.matcher import MatchXPath
 from reference_fixture import MemoryStorage
@@ -30,7 +31,7 @@ def finish():
     summary['completed_utc']=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime());out.write_text(json.dumps(summary,indent=2)+'\n')
 atexit.register(finish);finish();summary['result']='running'
 async def publish_fixture(client,node,content):
-    iq=client.Iq();iq['type']='set'
+    iq=client.Iq();iq['type']='set';iq['to']=client.boundjid.bare
     pubsub=ET.Element('{http://jabber.org/protocol/pubsub}pubsub')
     publish=ET.SubElement(pubsub,'{http://jabber.org/protocol/pubsub}publish',{'node':node})
     item=ET.SubElement(publish,'{http://jabber.org/protocol/pubsub}item',{'id':'current'});item.append(content)
@@ -39,6 +40,54 @@ async def publish_fixture(client,node,content):
     for name,value in [('FORM_TYPE','http://jabber.org/protocol/pubsub#publish-options'),('pubsub#access_model','open')]:
         field=ET.SubElement(form,'{jabber:x:data}field',{'var':name});ET.SubElement(field,'{jabber:x:data}value').text=value
     iq.append(pubsub);await iq.send(timeout=10)
+
+async def native_barrier(client):
+    # A bare-JID ping can be answered by the server before the client handles
+    # preceding traffic. Address the bound native resource as the barrier.
+    iq=client.Iq();iq['type']='get';iq['to']='bob@example.test/zeroclaw'
+    iq.append(ET.Element('{urn:xmpp:ping}ping'))
+    await iq.send(timeout=12)
+
+async def remove_fixture_bundle(client):
+    iq=client.Iq();iq['type']='set';iq['to']=client.boundjid.bare
+    owner=ET.Element('{http://jabber.org/protocol/pubsub#owner}pubsub')
+    ET.SubElement(owner,'{http://jabber.org/protocol/pubsub#owner}delete',{'node':'eu.siacs.conversations.axolotl.bundles:101'})
+    iq.append(owner)
+    try:await iq.send(timeout=10)
+    except IqError as error:
+        if error.iq['error']['condition']!='item-not-found':raise
+    iq=client.Iq();iq['type']='get';iq['to']=client.boundjid.bare
+    pubsub=ET.Element('{http://jabber.org/protocol/pubsub}pubsub')
+    ET.SubElement(pubsub,'{http://jabber.org/protocol/pubsub}items',{'node':'eu.siacs.conversations.axolotl.bundles:101'})
+    iq.append(pubsub)
+    try:
+        result=await iq.send(timeout=10)
+        assert not result.xml.findall('.//{http://jabber.org/protocol/pubsub}item'),'Fixture peer bundle still exists'
+    except IqError as error:
+        if error.iq['error']['condition']!='item-not-found':raise
+
+def rejected_prekey_packet(wire,variant):
+    # Mutate the named protobuf field in a synthetic reference packet. The
+    # outer packet can end in registration metadata rather than the inner MAC.
+    offset=1
+    def varint():
+        nonlocal offset
+        value=0;shift=0
+        while True:
+            byte=wire[offset];offset+=1;value|=(byte&127)<<shift
+            if byte<128:return value
+            shift+=7
+            assert shift<64
+    while offset<len(wire):
+        start=offset;tag=varint()
+        if tag&7==0:varint()
+        elif tag&7==2:
+            length=varint();offset+=length
+        else:raise AssertionError('Unexpected synthetic wire type')
+        if tag==8 and variant=='no-one-time-prekey':return wire[:start]+wire[offset:]
+        if tag==34 and variant=='bad-key-authentication':
+            altered=bytearray(wire);altered[offset-1]^=1;return bytes(altered)
+    raise AssertionError('Synthetic first contact lacks the requested field')
 
 async def seed_public_fixture(f,mode,port):
     ready=asyncio.get_running_loop().create_future()
@@ -122,8 +171,12 @@ async def main():
                 await asyncio.wait_for(asyncio.gather(*ready.values()),10)
                 by_name={c.name:c for c in clients}
                 if fresh:
-                    await publish_fixture(by_name['alice'],'eu.siacs.conversations.axolotl.bundles:101',ET.fromstring(f['alice_bundle_xml']))
+                    await remove_fixture_bundle(by_name['alice'])
                     await publish_fixture(by_name['alice'],'eu.siacs.conversations.axolotl.devicelist',ET.fromstring("<list xmlns='eu.siacs.conversations.axolotl'><device id='101'/></list>"))
+                    unavailable=by_name['alice'].make_message(mto='bob@example.test',mtype='chat')
+                    unavailable['id']='missing-peer-bundle';unavailable.xml.append(ET.fromstring(f['first_xml']));unavailable.send()
+                    await native_barrier(by_name['alice'])
+                    await publish_fixture(by_name['alice'],'eu.siacs.conversations.axolotl.bundles:101',ET.fromstring(f['alice_bundle_xml']))
                 for name in ['mallory','alice']:
                     message=by_name[name].make_message(mto='bob@example.test',mbody='must never reach agent',mtype='chat');message.send()
                 forged=by_name['mallory'].make_message(mto='bob@example.test',mtype='chat');forged['id']='forged';forged.xml.append(ET.fromstring(f['first_xml' if fresh else 'next_xml']));forged.send()
@@ -137,6 +190,15 @@ async def main():
                     else:header.set('sid','999999')
                     rejected=by_name['alice'].make_message(mto='bob@example.test',mtype='chat')
                     rejected['id']='rejected-'+variant;rejected.xml.append(payload);rejected.send()
+                if fresh:
+                    for variant in ('no-one-time-prekey','bad-key-authentication'):
+                        payload=ET.fromstring(f['first_xml']);key=payload.find('.//{eu.siacs.conversations.axolotl}key')
+                        wire=base64.b64decode(key.text)
+                        wire=rejected_prekey_packet(wire,variant)
+                        key.text=base64.b64encode(wire).decode()
+                        rejected=by_name['alice'].make_message(mto='bob@example.test',mtype='chat')
+                        rejected['id']='rejected-'+variant;rejected.xml.append(payload);rejected.send()
+                await native_barrier(by_name['alice'])
                 message=by_name['alice'].make_message(mto='bob@example.test',mtype='chat');message['id']='actual-channel-inbound';message.xml.append(ET.fromstring(f['first_xml' if fresh else 'next_xml']));message.send()
                 duplicate=by_name['alice'].make_message(mto='bob@example.test',mtype='chat');duplicate['id']='actual-channel-inbound';duplicate.xml.append(ET.fromstring(f['first_xml' if fresh else 'next_xml']));duplicate.send()
                 try:await asyncio.wait_for(done,15)

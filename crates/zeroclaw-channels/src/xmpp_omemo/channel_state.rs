@@ -249,19 +249,19 @@ impl ChannelState {
     ) -> Result<Option<String>> {
         let (device, pin) = self
             .discovery_request(peer, xml, policy)?
-            .context("First contact no longer eligible")?;
+            .ok_or(crate::xmpp_omemo::RejectedInbound)?;
         let bundle = crate::xmpp_omemo::bundle::parse_pinned(bundle_xml, device, pin)
             .map_err(crate::xmpp_omemo::reject_input)?;
         let sign = bundle.signed_pre_key.signature[63] >> 7;
         let ed = curve25519_dalek::montgomery::MontgomeryPoint(pin)
             .to_edwards(sign)
-            .context("Invalid peer identity")?
+            .ok_or(crate::xmpp_omemo::RejectedInbound)?
             .compress()
             .to_bytes();
         let selected = stanza::parse(xml, self.device).map_err(crate::xmpp_omemo::reject_input)?;
         let payload = selected
             .ciphertext
-            .context("Missing first-contact payload")?;
+            .ok_or(crate::xmpp_omemo::RejectedInbound)?;
         let cipher = self.cipher.clone();
         let account = self.account.clone();
         let max_chars = self.max_chars;

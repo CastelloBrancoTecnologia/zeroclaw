@@ -54,6 +54,12 @@ replay preservation and refusal to overwrite partial/foreign identities.
 Injected control-return storage failures leave the input admitted and unknown.
 The network fixture sends input for another recipient and an unknown device
 before the valid round trip; those rejections must not disconnect the listener.
+Fresh-contact cases additionally remove and verify absence of the peer's bundle,
+then send packets without a one-time prekey and with an invalid inner MAC.
+A ping to the full native resource, rather than a server-answerable bare JID,
+confirms the listener processed the rejections before the valid conversation.
+Peer discovery rejection and timeout leave the listener alive; connection/read
+failure, own publication failure and unusable local state still stop it.
 
 ## Limits
 

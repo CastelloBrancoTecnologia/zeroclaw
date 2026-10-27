@@ -79,6 +79,14 @@ async fn native_omemo_actual_channel_shared_runtime_and_socket_ack() -> Result<(
         )?;
     }
     let own: Vec<u8> = serde_json::from_value(f["bob_identity_curve"].clone())?;
+    if fresh {
+        let sessions: i64 = db.query_row(
+            "SELECT count(*) FROM state WHERE key LIKE '%/double_ratchet'",
+            [],
+            |r| r.get(0),
+        )?;
+        ensure!(sessions == 0, "Fresh fixture already contains a ratchet");
+    }
     db.execute(
         "INSERT INTO state VALUES('account',?1)",
         [json!("bob@example.test").to_string()],
@@ -152,6 +160,11 @@ async fn native_omemo_actual_channel_shared_runtime_and_socket_ack() -> Result<(
     let msg = tokio::time::timeout(Duration::from_secs(12), rx.recv())
         .await?
         .context("Channel receiver closed")?;
+    ensure!(
+        msg.id == "actual-channel-inbound",
+        "Rejected fixture input reached runtime: {}",
+        msg.id
+    );
     ensure!(
         msg.sender == "alice@example.test" && msg.channel_alias.as_deref() == Some("private"),
         "Wrong peer or alias reached runtime"

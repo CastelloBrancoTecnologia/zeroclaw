@@ -93,37 +93,37 @@ pub fn receive_fresh_with(
 ) -> Result<Vec<u8>> {
     ensure!(
         !input.stanza_id.is_empty() && input.stanza_id.len() <= 512,
-        "Invalid stanza ID"
+        crate::xmpp_omemo::RejectedInbound
     );
     ensure!(
         !input.peer.contains('/') && input.peer.contains('@') && input.peer.len() <= 1023,
-        "Invalid peer JID"
+        crate::xmpp_omemo::RejectedInbound
     );
     ensure!(
         (1..=i32::MAX as u32).contains(&input.peer_device),
-        "Invalid peer device ID"
+        crate::xmpp_omemo::RejectedInbound
     );
     ensure!(
         input.wire.len() <= 8192 && input.ciphertext.len() <= 1024 * 1024,
-        "Incoming payload too large"
+        crate::xmpp_omemo::RejectedInbound
     );
     let exchange =
-        PreKeySignalMessage::deserialize(input.wire).context("Invalid prekey exchange")?;
+        PreKeySignalMessage::deserialize(input.wire).ok_or(crate::xmpp_omemo::RejectedInbound)?;
     let point = CompressedEdwardsY(peer_ed)
         .decompress()
-        .context("Invalid peer identity")?;
+        .ok_or(crate::xmpp_omemo::RejectedInbound)?;
     ensure!(
         !point.is_small_order() && point.is_torsion_free(),
-        "Invalid peer identity subgroup"
+        crate::xmpp_omemo::RejectedInbound
     );
     let peer_curve = point.to_montgomery().to_bytes();
     ensure!(
         peer_curve == input.pinned_fingerprint && exchange.identity_key == peer_curve,
-        "Prekey identity is not pinned"
+        crate::xmpp_omemo::RejectedInbound
     );
     let prekey_id = exchange
         .pre_key_id
-        .context("A one-time prekey is required")?;
+        .ok_or(crate::xmpp_omemo::RejectedInbound)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let (private, public, own_id) = identity(&tx, input.account)?;
     let prefix = format!("{ROOT}/{}/{}/", input.peer, input.peer_device);
@@ -138,7 +138,7 @@ pub fn receive_fresh_with(
         params![input.peer, input.stanza_id],
         |r| r.get(0),
     )?;
-    ensure!(!seen, "Repeated stanza");
+    ensure!(!seen, crate::xmpp_omemo::RejectedInbound);
     let spk_pub = mapped(&tx, "signed_pre_key_ids", exchange.signed_pre_key_id)?;
     let pk_pub = mapped(&tx, "pre_key_ids", prekey_id)?;
     let mut state = load(&tx, &format!("{ROOT}/x3dh"))?;
@@ -191,7 +191,7 @@ pub fn receive_fresh_with(
             selected = Some((index, candidate));
         }
     }
-    let (index, prekey) = selected.context("One-time prekey already consumed or missing")?;
+    let (index, prekey) = selected.ok_or(crate::xmpp_omemo::RejectedInbound)?;
     let mut ratchet = DoubleRatchet::new_session_recipient(
         pair(private),
         peer_curve.to_vec(),
@@ -201,12 +201,13 @@ pub fn receive_fresh_with(
         own_id.into(),
         input.peer_device.into(),
         input.peer.into(),
-    )?;
+    )
+    .map_err(crate::xmpp_omemo::reject_input)?;
     let material = Zeroizing::new(
         DoubleRatchet::decrypt_key(&mut ratchet, &exchange.raw_message_bytes)
             .map_err(crate::xmpp_omemo::reject_input)?,
     );
-    ensure!(material.len() == 32, "Invalid legacy key material");
+    ensure!(material.len() == 32, crate::xmpp_omemo::RejectedInbound);
     let combined = [input.ciphertext, &material[16..]].concat();
     let plaintext = Zeroizing::new(
         crypto::aes_gcm_decrypt(
