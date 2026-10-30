@@ -456,6 +456,9 @@ pub(crate) struct ResumeEntry {
     /// red sidebar dot is carried here. `SessionLost` is not carried: the
     /// rebuild re-attaches the session, which is what clears it.
     turn_failed: bool,
+    /// Bounded cleanup notice captured while the old pane was disconnected.
+    /// It is restored only after the replacement pane successfully adopts.
+    cleanup_notice: Option<String>,
 }
 
 /// Client-owned queue and composer state that cannot be reconstructed from the
@@ -551,6 +554,9 @@ pub(crate) struct Chat {
     /// stay here so a later explicit retry or transport reconnect can recover
     /// them without losing their client-owned queues.
     resume_backgrounds: Vec<ResumeEntry>,
+    /// A cleanup failure belongs to the transport handoff, not to the old
+    /// pane. Keep its sanitized message until a rebuilt pane can surface it.
+    reconnect_cleanup_notice: Option<String>,
     /// List rect of the agent picker, recorded each draw so mouse clicks in the
     /// PickAgent phase can map a row to a selection. Default until first draw.
     pick_agent_list_area: Rect,
@@ -911,6 +917,7 @@ impl Chat {
             last_focused_sid: None,
             resume_focused: None,
             resume_backgrounds: Vec::new(),
+            reconnect_cleanup_notice: None,
             pick_agent_list_area: Rect::default(),
             pick_agent_double_click: crate::mouse::DoubleClickTracker::new(),
             session_list_double_click: crate::mouse::DoubleClickTracker::new(),
@@ -988,6 +995,12 @@ impl Chat {
                         .session_resync_in_flight
                         .contains_key(&state.session_id),
                 turn_failed: state.last_error == Some(SessionError::TurnFailed),
+                // Only the focused pane can display this notice. Cloning keeps
+                // it available when a transactional rebuild fails mid-flight.
+                cleanup_notice: summary
+                    .focused
+                    .then(|| self.reconnect_cleanup_notice.clone())
+                    .flatten(),
             });
         }
 
@@ -1013,6 +1026,34 @@ impl Chat {
             entries.push(entry);
         }
         entries
+    }
+
+    /// On transport loss, remove active-turn clipboard temporaries without
+    /// touching the composer or queued messages, so the cached pane stays
+    /// live across a reconnect. Surfaces any bounded cleanup failures on the
+    /// still-active pane.
+    pub(crate) fn cleanup_active_turn_on_disconnect(&mut self) {
+        if let ChatPhase::Active(state) = &mut self.phase {
+            let report = state.cleanup_active_turn_attachments();
+            if let Some(notice) = report.notice() {
+                // The current pane may be replaced after a successful
+                // reconnect, so retain the sanitized message for handoff.
+                self.reconnect_cleanup_notice = Some(notice.clone());
+                state.set_info_notice(notice);
+            }
+        }
+    }
+
+    /// Reclaim dispatched clipboard temporaries when the TUI exits normally.
+    /// This deliberately leaves composer and queued attachments untouched:
+    /// those inputs are not active turns and may be user-selected files.
+    pub(crate) fn cleanup_active_turn_on_shutdown(&mut self) {
+        if let ChatPhase::Active(state) = &mut self.phase {
+            let _ = state.cleanup_active_turn_attachments();
+        }
+        for state in &mut self.background {
+            let _ = state.cleanup_active_turn_attachments();
+        }
     }
 
     /// Finalize the old pane only after every replacement pane has built.
@@ -1751,6 +1792,7 @@ impl Chat {
             interrupted: false,
             recovery_required: false,
             turn_failed: false,
+            cleanup_notice: None,
         });
         self.pick_or_start_session(&agent_alias).await;
     }
@@ -2351,6 +2393,7 @@ impl Chat {
                         entry.interrupted,
                         entry.recovery_required,
                         entry.turn_failed,
+                        entry.cleanup_notice,
                     );
                 }
                 if !self.session_order.contains(&state.session_id) {
@@ -2558,6 +2601,7 @@ impl Chat {
             entry.interrupted,
             entry.recovery_required,
             entry.turn_failed,
+            entry.cleanup_notice.clone(),
         );
         Ok(state)
     }
@@ -6421,13 +6465,7 @@ fn render_with_plan_placement(
     let input_area = area;
 
     let queue_paused_hint = if state.queue_paused() && state.queue_len() > 0 {
-        Some(crate::i18n::t_args(
-            match state.message_queue.pause_reason() {
-                Some(QueuePauseReason::MissingCompletion) => "zc-queue-missing-completion-ghost",
-                _ => "zc-queue-paused-ghost",
-            },
-            &[("key", &resume_queue_chord_label())],
-        ))
+        Some(paused_queue_hint(state.message_queue.pause_reason()))
     } else {
         None
     };
@@ -6572,12 +6610,48 @@ fn model_picker_overlay_area(model_picker: &ModelPickerOverlay, area: Rect) -> O
     }
 }
 
+/// Read the same live binding table used by input dispatch.
+fn send_chord_label() -> String {
+    use crate::keymap::InputBarAction;
+    InputBarAction::resolved_bindings()
+        .into_iter()
+        .find_map(|(chord, action)| (action == InputBarAction::Submit).then(|| chord.display()))
+        .unwrap_or_default()
+}
+
 fn resume_queue_chord_label() -> String {
-    crate::keymap::ChatTabAction::PauseResumeQueue
-        .default_chords()
-        .first()
-        .map(|c| c.display())
-        .unwrap_or_else(|| "Alt+P".to_string())
+    use crate::keymap::ChatTabAction;
+    ChatTabAction::resolved_bindings()
+        .into_iter()
+        .find_map(|(chord, action)| {
+            (action == ChatTabAction::PauseResumeQueue).then(|| chord.display())
+        })
+        .unwrap_or_default()
+}
+
+fn paused_queue_hint(reason: Option<QueuePauseReason>) -> String {
+    let send = send_chord_label();
+    let resume = resume_queue_chord_label();
+    let missing_completion = reason == Some(QueuePauseReason::MissingCompletion);
+    match (send.is_empty(), resume.is_empty()) {
+        (true, true) => crate::i18n::t("zc-queue-paused-no-key-ghost"),
+        (true, false) | (false, true) => crate::i18n::t_args(
+            if missing_completion {
+                "zc-queue-missing-completion-single-key-ghost"
+            } else {
+                "zc-queue-paused-single-key-ghost"
+            },
+            &[("key", if send.is_empty() { &resume } else { &send })],
+        ),
+        (false, false) => crate::i18n::t_args(
+            if missing_completion {
+                "zc-queue-missing-completion-ghost"
+            } else {
+                "zc-queue-paused-ghost"
+            },
+            &[("key", &resume), ("send", &send)],
+        ),
+    }
 }
 
 /// Queue-management help entries shown whenever the queue sidebar is open —
@@ -12018,6 +12092,7 @@ impl ChatState {
         interrupted: bool,
         recovery_required: bool,
         turn_failed: bool,
+        cleanup_notice: Option<String>,
     ) {
         self.message_queue.restore(queue.message_queue);
         self.input_bar
@@ -12033,6 +12108,11 @@ impl ChatState {
                     "zc-chat-reconnect-interrupted",
                 ))));
             self.mark_dirty_append();
+        }
+        // The old disconnected pane cannot survive a successful adoption.
+        // Restore its sanitized cleanup warning after the new state is live.
+        if let Some(notice) = cleanup_notice {
+            self.set_info_notice(notice);
         }
     }
 
@@ -13389,6 +13469,7 @@ mod tests {
             interrupted: false,
             recovery_required: false,
             turn_failed: false,
+            cleanup_notice: None,
         }
     }
 
@@ -17629,6 +17710,7 @@ mod tests {
             entry.interrupted,
             entry.recovery_required,
             entry.turn_failed,
+            entry.cleanup_notice,
         );
         assert_eq!(rebuilt.queue_len(), 1);
         assert_eq!(
@@ -17687,7 +17769,7 @@ mod tests {
         );
         assert!(snapshot.message_queue.resume_override());
         let mut adopted = state_for("sess-r", "alpha");
-        adopted.restore_reconnect_state(snapshot, true, false, false);
+        adopted.restore_reconnect_state(snapshot, true, false, false, None);
         assert!(
             !adopted.message_queue.resume_override(),
             "adoption must discard the old turn's override"
@@ -18016,6 +18098,7 @@ mod tests {
                 entry.interrupted,
                 entry.recovery_required,
                 entry.turn_failed,
+                entry.cleanup_notice,
             );
             match entry.session_id.as_str() {
                 "sess-a" => {
@@ -27542,6 +27625,180 @@ mod tests {
             .join("\n")
     }
 
+    // Keep process-global overrides stable across rendering and async dispatch.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn paused_queue_hints_follow_resolved_bindings_in_rendered_input_bar() {
+        use crate::keymap::{ChatTabAction, Chord, InputBarAction as KeymapInputAction, overrides};
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use ratatui::{Terminal, backend::TestBackend};
+
+        const CHILD_ENV: &str = "ZEROCODE_QUEUE_HINT_TEST_CHILD";
+        const CHILD_SUCCESS: &str = "queue hint rendering and dispatch matrix passed";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "chat::tests::paused_queue_hints_follow_resolved_bindings_in_rendered_input_bar",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "queue hint subprocess failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains(CHILD_SUCCESS),
+                "queue hint subprocess did not execute the full matrix",
+            );
+            print!("{}", String::from_utf8_lossy(&output.stdout));
+            return;
+        }
+
+        let _guard = overrides::TEST_GUARD
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        overrides::reset();
+        struct ResetBindings;
+        impl Drop for ResetBindings {
+            fn drop(&mut self) {
+                overrides::reset();
+            }
+        }
+        let _reset = ResetBindings;
+        let enter = Chord::key(KeyCode::Enter);
+        let alt_p = Chord::with(KeyCode::Char('p'), KeyModifiers::ALT);
+        let f5 = Chord::key(KeyCode::F(5));
+        let f6 = Chord::key(KeyCode::F(6));
+
+        for (send, resume) in [
+            (Some(enter), Some(alt_p)),
+            (Some(f5.clone()), Some(f6.clone())),
+            (None, Some(f6)),
+            (Some(f5), None),
+            (None, None),
+        ] {
+            overrides::set_row(
+                KeymapInputAction::TAG,
+                &KeymapInputAction::Submit.variant_name(),
+                send.clone().into_iter().collect(),
+            );
+            overrides::set_row(
+                ChatTabAction::TAG,
+                &ChatTabAction::PauseResumeQueue.variant_name(),
+                resume.clone().into_iter().collect(),
+            );
+            assert_eq!(
+                send_chord_label(),
+                send.as_ref().map(Chord::display).unwrap_or_default()
+            );
+            assert_eq!(
+                resume_queue_chord_label(),
+                resume.as_ref().map(Chord::display).unwrap_or_default()
+            );
+
+            for missing_completion in [false, true] {
+                // Exercise each advertised key independently against both pause reasons.
+                let keys: Vec<_> = send
+                    .iter()
+                    .chain(resume.iter())
+                    .cloned()
+                    .map(Some)
+                    .collect();
+                let keys = if keys.is_empty() { vec![None] } else { keys };
+                for key in keys {
+                    let (mut chat, _writer_rx) = test_chat();
+                    let mut paused = state();
+                    paused.turn_in_flight = true;
+                    paused
+                        .enqueue_message("queued".to_string(), Vec::new())
+                        .unwrap();
+                    paused.commit_turn(String::new(), false);
+                    if missing_completion {
+                        paused
+                            .message_queue
+                            .settle_turn(false, QueuePauseReason::MissingCompletion);
+                    }
+                    assert!(paused.queue_paused());
+                    let hint = paused_queue_hint(paused.message_queue.pause_reason());
+                    match send.as_ref().or(resume.as_ref()) {
+                        Some(primary) => assert!(hint.contains(&primary.display()), "{hint}"),
+                        None => assert_eq!(hint, crate::i18n::t("zc-queue-paused-no-key-ghost")),
+                    }
+                    if send
+                        .as_ref()
+                        .is_none_or(|chord| chord.code != KeyCode::Enter)
+                    {
+                        assert!(!hint.contains("Enter"), "{hint}");
+                    }
+                    if !missing_completion && let Some(resume) = &resume {
+                        assert!(hint.contains(&resume.display()), "{hint}");
+                    }
+                    chat.phase = ChatPhase::Active(Box::new(paused));
+
+                    let width = if missing_completion { 80 } else { 120 };
+                    let dock_width = crate::config::SidebarSection::default().width;
+                    let area = Rect::new(0, 0, width, 24);
+                    let conversation = Rect::new(0, 0, width - dock_width, area.height);
+                    let queue = Rect::new(conversation.width, 0, dock_width, 3);
+                    let mut terminal = Terminal::new(TestBackend::new(width, area.height)).unwrap();
+                    terminal
+                        .draw(|frame| chat.draw_with_dock(frame, conversation, Some(queue), None))
+                        .unwrap();
+                    let rendered = overlay_text(&terminal, area);
+                    let row = rendered
+                        .lines()
+                        .find(|row| row.contains(&hint))
+                        .unwrap_or_else(|| panic!("paused hint not rendered: {rendered}"));
+                    println!("{width}x24 terminal cells: {}", row.trim_end());
+
+                    let mut term: crate::config_manager::Term = Terminal::with_options(
+                        crate::terminal_backend::WideCellCleanupBackend::new(std::io::stdout()),
+                        ratatui::TerminalOptions {
+                            viewport: ratatui::Viewport::Fixed(area),
+                        },
+                    )
+                    .unwrap();
+                    if send
+                        .as_ref()
+                        .is_none_or(|chord| chord.code != KeyCode::Enter)
+                    {
+                        chat.handle_key(
+                            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                            &mut term,
+                        )
+                        .await;
+                        assert!(
+                            active_state(&mut chat).queue_paused(),
+                            "unbound Enter must not resume"
+                        );
+                    }
+                    if let Some(key) = key {
+                        chat.handle_key(
+                            KeyEvent::new(key.code, key.effective_modifiers()),
+                            &mut term,
+                        )
+                        .await;
+                        assert!(
+                            !active_state(&mut chat).queue_paused(),
+                            "{} must resume",
+                            key.display()
+                        );
+                        assert!(
+                            active_state(&mut chat).turn_in_flight,
+                            "resume must dispatch the queued message"
+                        );
+                    }
+                }
+            }
+        }
+        println!("{CHILD_SUCCESS}");
+    }
+
     #[test]
     fn session_list_overlay_renders_memory_isolation_note() {
         use ratatui::{Terminal, backend::TestBackend};
@@ -29702,6 +29959,78 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn normal_exit_cleans_active_clipboard_attachment_without_touching_user_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clipboard_path = dir.path().join("normal-exit-clipboard.png");
+        let user_path = dir.path().join("normal-exit-user.png");
+        std::fs::write(&clipboard_path, b"clipboard").expect("write clipboard temp");
+        std::fs::write(&user_path, b"user").expect("write user file");
+
+        let (tx, _rx) = mpsc::channel::<String>(16);
+        let client = Arc::new(RpcClient::with_rpc(Arc::new(RpcOutbound::new(tx))));
+        let mut chat = Chat::new(client, PaneKind::Chat);
+        let mut active = state();
+        active.active_turn_attachments = vec![
+            clipboard_att(&clipboard_path, "normal-exit-clipboard.png"),
+            PendingAttachment {
+                path: user_path.clone(),
+                mime_type: "image/png".to_string(),
+                filename: "normal-exit-user.png".to_string(),
+                size_bytes: 4,
+                source: crate::attachment::AttachmentSource::File,
+            },
+        ];
+        chat.phase = ChatPhase::Active(Box::new(active));
+        // This is invoked by the app's normal exit path after the event loop.
+        chat.cleanup_active_turn_on_shutdown();
+
+        assert!(
+            !clipboard_path.exists(),
+            "normal exit must reclaim the active clipboard temp"
+        );
+        assert!(
+            user_path.exists(),
+            "normal exit must preserve user-selected files"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconnect_adoption_restores_active_turn_cleanup_failure_notice() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let blocked_path = dir.path().join("cleanup-failure");
+        std::fs::create_dir(&blocked_path).expect("create forced-failure path");
+        let (tx, _rx) = mpsc::channel::<String>(16);
+        let client = Arc::new(RpcClient::with_rpc(Arc::new(RpcOutbound::new(tx))));
+        let mut chat = Chat::new(client, PaneKind::Chat);
+        let mut active = state();
+        active.active_turn_attachments = vec![clipboard_att(&blocked_path, "cleanup-failure")];
+        chat.phase = ChatPhase::Active(Box::new(active));
+        chat.session_order = vec!["sess-1".to_string()];
+
+        chat.cleanup_active_turn_on_disconnect();
+        let entry = chat
+            .resume_entries()
+            .into_iter()
+            .next()
+            .expect("focused session must be retained");
+        let mut rebuilt = state();
+        rebuilt.restore_reconnect_state(
+            entry.queue,
+            entry.interrupted,
+            entry.recovery_required,
+            entry.turn_failed,
+            entry.cleanup_notice,
+        );
+
+        assert!(
+            rebuilt
+                .info_message
+                .as_ref()
+                .is_some_and(|message| { message.text.contains("1 temporary file") })
+        );
+    }
+
     #[test]
     fn completion_does_not_delete_an_unsent_composer_attachment() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -31106,7 +31435,10 @@ mod tests {
         use ratatui::{Terminal, backend::TestBackend};
         let hint = crate::i18n::t_args(
             "zc-queue-missing-completion-ghost",
-            &[("key", &resume_queue_chord_label())],
+            &[
+                ("key", &resume_queue_chord_label()),
+                ("send", &send_chord_label()),
+            ],
         );
         let dock_width = crate::config::SidebarSection::default().width;
         for width in [80, 120] {

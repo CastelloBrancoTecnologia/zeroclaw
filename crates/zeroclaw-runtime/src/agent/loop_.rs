@@ -1972,13 +1972,12 @@ pub async fn run(
                 "Delete a memory entry. Use when: memory is incorrect/stale or explicitly requested for removal. Don't use when: impact is uncertain.",
             ),
         ];
-        if matches!(
-            eff_prompt_injection_mode,
-            zeroclaw_config::schema::SkillsPromptInjectionMode::Compact
-        ) {
+        if crate::skills::skills_require_read_tool(&skills, eff_prompt_injection_mode) {
             tool_descs.push((
                 "read_skill",
-                "Load the full source for an available skill by name. Use when: compact mode only shows a summary and you need the complete skill instructions.",
+                crate::i18n::get_tool_description("read_skill").unwrap_or(
+                    "Load the full source for an available skill by name. Use when: its prompt entry marks the instructions as on-demand.",
+                ),
             ));
         }
         tool_descs.push((
@@ -2640,6 +2639,9 @@ pub async fn run(
             let mut image_cache = zeroclaw_providers::multimodal::LocalImageCache::new();
             let mut provider_image_state = crate::agent::turn::ProviderImageState::default();
 
+            // The shipped REPL reads stdin directly instead of going through
+            // `CliChannel::listen`, so it must own the terminal erase guard.
+            let _utf8_erase_guard = crate::cli_input::ensure_terminal_utf8_erase();
             loop {
                 print!("> ");
                 let _ = std::io::stdout().flush();
@@ -3933,10 +3935,7 @@ async fn process_message_inner(
             ("screenshot", "Capture a screenshot."),
             ("image_info", "Read image metadata."),
         ];
-        if matches!(
-            eff_prompt_injection_mode,
-            zeroclaw_config::schema::SkillsPromptInjectionMode::Compact
-        ) {
+        if crate::skills::skills_require_read_tool(&skills, eff_prompt_injection_mode) {
             tool_descs.push((
                 "read_skill",
                 "Load the full source for an available skill by name.",
@@ -21294,13 +21293,32 @@ Let me check the result."#;
         assert_correlations(&broadcast_records, &traces);
 
         zeroclaw_log::flush_for_test().expect("flush runtime trace");
-        let persisted = std::fs::read_to_string(
-            zeroclaw_log::runtime_trace_path().expect("runtime trace path"),
+        let trace_path = zeroclaw_log::runtime_trace_path().expect("runtime trace path");
+
+        // The trace file is process-wide: tests running alongside this one keep
+        // appending to it after the flush, so the tail can be a record another
+        // test is still writing, cut anywhere, even inside a multi-byte
+        // character. Leave such a record behind the flushed ones so every run
+        // exercises the tolerance below.
+        let mut partial =
+            br#"{"trace_id":"in-flight","message":"llm_request","content":""#.to_vec();
+        partial.push(0xE2);
+        std::io::Write::write_all(
+            &mut std::fs::OpenOptions::new()
+                .append(true)
+                .open(&trace_path)
+                .expect("open runtime trace for append"),
+            &partial,
         )
-        .expect("read runtime trace");
+        .expect("append a partial record");
+
+        // The flush drained this test's own records, so none of them can be
+        // partial. Keep the lines that parse; `assert_correlations` then
+        // selects this test's records by trace id, as the broadcast check does.
+        let persisted = std::fs::read(&trace_path).expect("read runtime trace");
         let persisted_records: Vec<serde_json::Value> = persisted
-            .lines()
-            .map(|line| serde_json::from_str(line).expect("valid trace JSON"))
+            .split(|byte| *byte == b'\n')
+            .filter_map(|line| serde_json::from_slice(line).ok())
             .collect();
         assert_correlations(&persisted_records, &traces);
     }
@@ -22146,6 +22164,33 @@ Let me check the result."#;
                 .expect("capacity failure must retain its typed cause");
             assert_eq!(exceeded.model_context_window, capacity);
             assert!(exceeded.estimated_tokens > capacity);
+            // The shares are what lets an operator see what filled the window.
+            assert!(
+                exceeded.system_tokens > 0,
+                "the request's system prompt must be accounted for"
+            );
+            if matches!(scenario, HookBudgetScenario::SummaryFloor) {
+                assert_eq!(
+                    exceeded.tool_schema_tokens, 0,
+                    "the graceful summary is tools-free, so no schema share"
+                );
+            } else {
+                assert!(
+                    exceeded.tool_schema_tokens > 0,
+                    "a native-tools request must report its schema share"
+                );
+            }
+            // Raw shares are parts of the raw total, and calibration only
+            // ever scales that total up, so neither ordering can invert.
+            assert!(
+                exceeded.system_tokens + exceeded.tool_schema_tokens
+                    <= exceeded.raw_estimated_tokens,
+                "the shares must be parts of the raw total"
+            );
+            assert!(
+                exceeded.raw_estimated_tokens <= exceeded.estimated_tokens,
+                "calibration only ever scales the total up"
+            );
         } else {
             let text = result.expect("request must fit");
             if summary {
