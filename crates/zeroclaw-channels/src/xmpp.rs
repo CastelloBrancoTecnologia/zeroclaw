@@ -138,6 +138,36 @@ impl XmppChannel {
         self.inbox_vault = root;
         self
     }
+    fn enqueue_ping_reply(
+        &self,
+        from: Option<jid::Jid>,
+        id: String,
+        requests: &mpsc::Sender<Outbound>,
+    ) -> anyhow::Result<()> {
+        let own = self.config.username.parse::<jid::BareJid>()?;
+        let authorized = from.as_ref().is_none_or(|sender| {
+            let bare = sender.to_bare();
+            bare == own
+                || (bare.node().is_none() && bare.domain() == own.domain())
+                || self.allowed(&bare.to_string())
+        });
+        if authorized {
+            let response = Outbound::Control(Box::new(Stanza::Iq(Iq::Result {
+                from: None,
+                to: from,
+                id,
+                payload: None,
+            })));
+            if requests.try_send(response).is_err() {
+                ::zeroclaw_log::record!(
+                    WARN,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note),
+                    "XMPP ping response dropped: control queue unavailable"
+                );
+            }
+        }
+        Ok(())
+    }
     fn allowed(&self, account: &str) -> bool {
         let Ok(jid) = account.parse::<jid::BareJid>() else {
             return false;
@@ -768,14 +798,7 @@ impl XmppChannel {
                     Stanza::Iq(Iq::Get {
                         from, id, payload, ..
                     }) if payload.is("ping", "urn:xmpp:ping") => {
-                        requests
-                            .try_send(Outbound::Control(Box::new(Stanza::Iq(Iq::Result {
-                                from: None,
-                                to: from,
-                                id,
-                                payload: None,
-                            }))))
-                            .context("XMPP ping response queue full")?;
+                        self.enqueue_ping_reply(from, id, &requests)?;
                     }
                     _ => {}
                 }
@@ -1126,6 +1149,47 @@ mod tests {
             Arc::new(|| vec!["alice@example.org".into(), "!mallory@example.org".into()]),
         )
     }
+    #[test]
+    fn xmpp_ping_denies_untrusted_peers_and_drops_backpressure_without_failure()
+    -> anyhow::Result<()> {
+        let adapter = adapter(PathBuf::new());
+        let (tx, mut rx) = mpsc::channel(32);
+        adapter.enqueue_ping_reply(
+            Some("mallory@example.org/device".parse()?),
+            "denied".into(),
+            &tx,
+        )?;
+        adapter.enqueue_ping_reply(Some("foreign.test".parse()?), "foreign-server".into(), &tx)?;
+        assert!(rx.try_recv().is_err());
+        for sender in [
+            None,
+            Some("example.org"),
+            Some("bot@example.org/device"),
+            Some("alice@example.org/device"),
+        ] {
+            adapter.enqueue_ping_reply(
+                sender.map(str::parse).transpose()?,
+                "keepalive".into(),
+                &tx,
+            )?;
+            assert!(rx.try_recv().is_ok());
+        }
+        for index in 0..64 {
+            adapter.enqueue_ping_reply(
+                Some("alice@example.org/device".parse()?),
+                format!("burst-{index}"),
+                &tx,
+            )?;
+        }
+        let mut replies = 0;
+        while rx.try_recv().is_ok() {
+            replies += 1;
+        }
+        assert_eq!(replies, 32);
+        drop(rx);
+        adapter.enqueue_ping_reply(None, "closed-queue".into(), &tx)?;
+        Ok(())
+    }
     fn message(sender: &str, body: &str) -> Message {
         let mut message = Message::new(None);
         message.from = Some(sender.parse().unwrap());
@@ -1327,6 +1391,6 @@ mod discovery;
 #[path = "xmpp_inbox_fault_probe.rs"]
 mod inbox_fault_probe;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 #[path = "xmpp_native_inbox_admin.rs"]
-mod inbox_admin;
+pub mod inbox_admin;

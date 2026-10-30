@@ -3,7 +3,6 @@ use crate::xmpp_omemo::store::identity;
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, Transaction, params};
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use zeroize::{Zeroize, Zeroizing};
@@ -188,15 +187,11 @@ pub enum Phase {
 /// Authenticated metadata for reconciliation. Message content is never returned.
 #[derive(Debug)]
 pub struct Record {
-    #[cfg(test)]
     pub phase: Phase,
     pub device: u32,
     pub pin: [u8; 32],
-    #[cfg(test)]
     pub runtime: Option<RuntimeLink>,
-    #[cfg(test)]
     pub control: Option<String>,
-    #[cfg(test)]
     pub review_token: [u8; 32],
 }
 pub fn inspect(
@@ -213,38 +208,24 @@ pub fn inspect(
         params![peer, id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    match phase.as_str() {
+    let phase = match phase.as_str() {
         "pending" => Phase::Pending,
         "admitted" => Phase::Admitted,
         "returned" => Phase::Returned,
         _ => anyhow::bail!("Invalid inbox phase"),
     };
-    let body = decode_body(cipher, account, peer, id, own, own_device, &sealed)?;
-    #[cfg(test)]
-    let mut body = body;
-    #[cfg(test)]
-    let phase = match phase.as_str() {
-        "pending" => Phase::Pending,
-        "admitted" => Phase::Admitted,
-        "returned" => Phase::Returned,
-        _ => unreachable!("phase already validated"),
-    };
+    let mut body = decode_body(cipher, account, peer, id, own, own_device, &sealed)?;
     let record = Record {
-        #[cfg(test)]
         phase,
         device: body.device,
         pin: body.pin,
-        #[cfg(test)]
         runtime: body.runtime.take(),
-        #[cfg(test)]
         control: body.control.take(),
-        #[cfg(test)]
         review_token: review_token(peer, id, &phase, &sealed),
     };
     tx.commit()?;
     Ok(record)
 }
-#[cfg(test)]
 fn review_token(peer: &str, id: &str, phase: &Phase, sealed: &str) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(b"native-omemo-ingress-review-v1");
@@ -265,7 +246,6 @@ fn review_token(peer: &str, id: &str, phase: &Phase, sealed: &str) -> [u8; 32] {
 }
 /// A new operator-review fact, not a tool outcome or runtime completion claim.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg(test)]
 pub struct ReleaseReceipt {
     domain: String,
     account: String,
@@ -281,7 +261,6 @@ pub struct ReleaseReceipt {
     pub source_token: [u8; 32],
     pub released_at: u64,
 }
-#[cfg(test)]
 pub struct ReleaseReview<'a> {
     pub expected_token: [u8; 32],
     pub operator: &'a str,
@@ -289,7 +268,6 @@ pub struct ReleaseReview<'a> {
 }
 /// Explicit review can release only returned processing, never pending or unknown.
 /// This primitive is deliberately absent from the agent/channel tool interface.
-#[cfg(test)]
 pub fn release_reviewed_returned(
     conn: &mut Connection,
     cipher: &Arc<dyn InboxCipher>,
@@ -370,7 +348,6 @@ pub fn release_reviewed_returned(
     tx.commit()?;
     Ok(())
 }
-#[cfg(test)]
 pub fn inspect_release(
     conn: &mut Connection,
     cipher: &Arc<dyn InboxCipher>,
@@ -497,7 +474,18 @@ pub fn control_returned(
     control: &str,
 ) -> Result<()> {
     ensure!(
-        matches!(control, "stop" | "gate" | "event"),
+        matches!(
+            control,
+            "stop"
+                | "gate"
+                | "event"
+                | "unowned_route"
+                | "pending_budget"
+                | "agent_retired"
+                | "hook_cancelled"
+                | "lane_refused"
+                | "queued_cancelled"
+        ),
         "Unknown dispatcher control path"
     );
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;

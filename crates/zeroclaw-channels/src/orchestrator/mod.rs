@@ -1323,6 +1323,11 @@ impl ConversationLaneRegistry {
                 .as_ref()
                 .is_some_and(|registration| registration.cancellation.is_cancelled())
         {
+            if !self.cancel.is_cancelled() {
+                if let Some(receipt) = &turn.ingress_receipt {
+                    receipt.control_returned("queued_cancelled").await;
+                }
+            }
             return;
         }
 
@@ -1361,6 +1366,11 @@ impl ConversationLaneRegistry {
         let Some(turn_lease) =
             self.reserve_turn(turn.ctx.agent_alias.as_str(), turn.agent_generation)
         else {
+            if !self.cancel.is_cancelled() {
+                if let Some(receipt) = &turn.ingress_receipt {
+                    receipt.control_returned("agent_retired").await;
+                }
+            }
             return;
         };
         run_conversation_turn(*turn, permit, self.cancel.clone(), Arc::new(turn_lease)).await;
@@ -1506,6 +1516,11 @@ async fn route_inbound_slot(
         .as_ref()
         .is_some_and(|registration| registration.cancellation.is_cancelled())
     {
+        if !lanes.cancel.is_cancelled() {
+            if let Some(receipt) = &turn.ingress_receipt {
+                receipt.control_returned("queued_cancelled").await;
+            }
+        }
         return;
     }
 
@@ -1515,11 +1530,19 @@ async fn route_inbound_slot(
     let hooked = {
         let Some(_lease) = lanes.reserve_turn(ctx.agent_alias.as_str(), turn.agent_generation)
         else {
+            if !lanes.cancel.is_cancelled() {
+                if let Some(receipt) = &turn.ingress_receipt {
+                    receipt.control_returned("agent_retired").await;
+                }
+            }
             return;
         };
         run_inbound_message_hook(&ctx, turn.msg).await
     };
     let Some(hooked) = hooked else {
+        if let Some(receipt) = &turn.ingress_receipt {
+            receipt.control_returned("hook_cancelled").await;
+        }
         return;
     };
     turn.msg = hooked;
@@ -1536,6 +1559,11 @@ async fn route_inbound_slot(
     match lanes.enqueue(&routed_key, turn) {
         LaneAdmission::Enqueued => {}
         LaneAdmission::Refused(refused) => {
+            if !lanes.cancel.is_cancelled() {
+                if let Some(receipt) = &refused.ingress_receipt {
+                    receipt.control_returned("lane_refused").await;
+                }
+            }
             send_conversation_busy(
                 &refused.ctx,
                 &refused.msg,
@@ -1546,7 +1574,14 @@ async fn route_inbound_slot(
         }
         // Dropping the turn releases its registration (marking its
         // completion for any waiting successor) and its admission permit.
-        LaneAdmission::Canceled(canceled) => drop(canceled),
+        LaneAdmission::Canceled(canceled) => {
+            if !lanes.cancel.is_cancelled() {
+                if let Some(receipt) = &canceled.ingress_receipt {
+                    receipt.control_returned("queued_cancelled").await;
+                }
+            }
+            drop(canceled);
+        }
     }
     order.finish();
 }
@@ -11820,6 +11855,13 @@ async fn run_conversation_turn(
     // `/stop` or a newer message may have cancelled this turn while it was
     // still queued; the slot is released without running it.
     if registration.cancellation.is_cancelled() {
+        // Shutdown/abort remains uncertain; only a known per-turn cancellation
+        // before execution is a terminal non-turn outcome.
+        if !generation_cancel.is_cancelled() {
+            if let Some(receipt) = &ingress_receipt {
+                receipt.control_returned("queued_cancelled").await;
+            }
+        }
         drop(registration);
         dispatch_ownership.release();
         drop(execution_permit);
@@ -12558,6 +12600,9 @@ async fn run_message_dispatch_loop_until_cancelled(
 
         let Some(ctx) = router.resolve(&msg) else {
             ::zeroclaw_log::record!(WARN, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_outcome(::zeroclaw_log::EventOutcome::Unknown).with_attrs(::serde_json::json!({"channel_alias": msg.channel_alias, "sender": msg.sender})), "dropping inbound message: no agent owns this channel");
+            if let Some(receipt) = &ingress_receipt {
+                receipt.control_returned("unowned_route").await;
+            }
             continue;
         };
 
@@ -12728,6 +12773,9 @@ async fn run_message_dispatch_loop_until_cancelled(
                     &busy_notice_budget,
                     &notice_tasks,
                 );
+                if let Some(receipt) = &ingress_receipt {
+                    receipt.control_returned("pending_budget").await;
+                }
                 continue;
             }
         };
@@ -15650,6 +15698,14 @@ fn collect_configured_channels_with_authority(
         );
     }
 
+    #[cfg(not(feature = "channel-xmpp"))]
+    if config.channels.xmpp.values().any(|channel| channel.enabled) {
+        ::zeroclaw_log::record!(
+            WARN,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note),
+            "XMPP is configured but this build lacks channel-xmpp; skipping XMPP"
+        );
+    }
     #[cfg(feature = "channel-xmpp")]
     for (alias, xmpp) in &config.channels.xmpp {
         if !xmpp.enabled || !active_channel_aliases.contains(&format!("xmpp.{alias}")) {
@@ -27400,6 +27456,131 @@ api_key = "anthropic-key"
                 .iter()
                 .any(|e| e.0 == "control" && e.1 == "stop" && e.2 == "stop")
         );
+    }
+    #[cfg(feature = "channel-xmpp")]
+    #[tokio::test]
+    async fn native_ingress_unowned_route_returns_without_agent_history() {
+        let channel = Arc::new(RuntimeLinkProbe {
+            events: std::sync::Mutex::new(Vec::new()),
+            fail_binding: false,
+        });
+        let ctx = test_runtime_ctx_with_config_agent_and_provider_ref(
+            channel.clone(),
+            Arc::new(DummyModelProvider),
+            zeroclaw_config::schema::Config::default(),
+            zeroclaw_config::schema::AliasedAgentConfig::default(),
+            "test-provider",
+            None,
+        );
+        let router = AgentRouter::multi(
+            HashMap::from([("test".into(), ctx)]),
+            HashMap::new(),
+            None,
+            None,
+            None,
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tx.send(ChannelMessage::new(
+            "unowned",
+            "alice@example.test",
+            "alice@example.test",
+            "ordinary input on approval-only route",
+            "xmpp",
+            0,
+        ))
+        .await
+        .unwrap();
+        drop(tx);
+        run_message_dispatch_loop(rx, router, 1).await;
+        let events = channel.events.lock().unwrap();
+        assert!(events.iter().any(|e| e.0 == "admit" && e.1 == "unowned"));
+        assert!(
+            events
+                .iter()
+                .any(|e| e.0 == "control" && e.1 == "unowned" && e.2 == "unowned_route")
+        );
+        assert!(!events.iter().any(|e| e.0 == "bind" || e.0 == "returned"));
+    }
+    #[cfg(feature = "channel-xmpp")]
+    #[tokio::test]
+    async fn native_ingress_queued_stop_returns_but_generation_abort_stays_unknown() {
+        for (shutdown, lane_worker) in [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let channel = Arc::new(RuntimeLinkProbe {
+                events: std::sync::Mutex::new(Vec::new()),
+                fail_binding: false,
+            });
+            let ctx = test_runtime_ctx_with_config_agent_and_provider_ref(
+                channel.clone(),
+                Arc::new(DummyModelProvider),
+                zeroclaw_config::schema::Config::default(),
+                zeroclaw_config::schema::AliasedAgentConfig::default(),
+                "test-provider",
+                None,
+            );
+            let msg = ChannelMessage::new(
+                "queued",
+                "alice@example.test",
+                "alice@example.test",
+                "queued input",
+                "xmpp",
+                0,
+            );
+            let receipt = IngressReceipt::new(channel.clone(), &msg);
+            let cancellation = CancellationToken::new();
+            cancellation.cancel();
+            let completion = Arc::new(InFlightTaskCompletion::new());
+            let registration = TurnRegistration {
+                scope_key: "fixture".into(),
+                task_id: 1,
+                cancellation,
+                completion: completion.clone(),
+                superseded: None,
+                in_flight: Arc::new(Mutex::new(HashMap::new())),
+            };
+            let budget = Arc::new(tokio::sync::Semaphore::new(1));
+            let execution = Arc::new(tokio::sync::Semaphore::new(1));
+            let lifecycle =
+                zeroclaw_runtime::live_config_authority::AgentLifecycleCoordinator::default();
+            let lease = Arc::new(lifecycle.reserve_turn("test-agent").unwrap());
+            let turn = PendingTurn {
+                ctx,
+                agent_generation: 0,
+                msg,
+                delivery_message_id: "queued".into(),
+                ingress_receipt: Some(receipt),
+                dispatch_ownership: ModelPickerDispatchOwnership::hold("queued"),
+                registration: Some(registration),
+                pending_work: budget.clone().try_acquire_owned().unwrap(),
+            };
+            let generation = CancellationToken::new();
+            if shutdown {
+                generation.cancel();
+            }
+            if lane_worker {
+                drop(lease);
+                let lanes = ConversationLaneRegistry::new(execution.clone(), lifecycle, generation);
+                lanes.process_turn(Box::new(turn)).await;
+            } else {
+                run_conversation_turn(
+                    turn,
+                    execution.clone().try_acquire_owned().unwrap(),
+                    generation,
+                    lease,
+                )
+                .await;
+            }
+            let events = channel.events.lock().unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .any(|e| e.0 == "control" && e.2 == "queued_cancelled"),
+                !shutdown
+            );
+            assert!(!events.iter().any(|e| e.0 == "bind" || e.0 == "returned"));
+            assert!(completion.is_done());
+            assert_eq!(budget.available_permits(), 1);
+        }
     }
     // END ISOLATED NATIVE CHANNEL DISPATCH HELPER
 

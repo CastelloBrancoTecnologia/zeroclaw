@@ -19190,7 +19190,7 @@ pub struct XmppConfig {
     #[tab(Advanced)]
     pub connect_timeout_secs: u64,
     /// Require OMEMO for both inbound and outbound text. No plaintext fallback.
-    /// Requires slixmpp-omemo and manually trusted device fingerprints below.
+    /// Uses native Linux legacy OMEMO and manually trusted device fingerprints below.
     #[tab(Advanced)]
     pub omemo_enabled: bool,
     /// Trusted devices as "bare-jid Curve25519-fingerprint" entries (64 hex

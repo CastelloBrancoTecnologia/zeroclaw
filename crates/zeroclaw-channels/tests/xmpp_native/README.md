@@ -55,7 +55,9 @@ live pin/allowlist revocation, duplicate suppression, identity preservation,
 published one-time prekeys and their non-reused IDs, native identity creation,
 exclusive state ownership, cancellation/reopen, encrypted ingress and canonical
 history linkage. Child-process probes exercise crash admission and offline
-reviewed release without depending on an installed administrative binary.
+reviewed release through the same production administrative implementation exposed by
+`zeroclaw channel xmpp-inbox`. The operator regression fills the 1,024-record
+limit, releases one reviewed returned item, admits a new item, and rejects replay.
 An injected reservation-cleanup fault must preserve the exact ciphertext.
 
 Expired/cancelled send unit tests cover the socket boundary separately. A

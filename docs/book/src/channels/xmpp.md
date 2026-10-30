@@ -189,3 +189,34 @@ revocation, duplicate suppression, cancellation, encrypted ingress and
 transaction failures. Unit tests also cover parser ambiguity, malformed wire
 input, replay rejection, key/identity mismatch, unsafe state ownership and
 expired/cancelled outbound writes.
+
+## Offline reviewed inbox recovery
+
+Native encrypted ingress retains at most 1,024 records, including returned work.
+Reaching the limit stops admission rather than silently forgetting unknown work.
+Restarting does not reclaim slots. Use the supported Linux operator command,
+compiled with `channel-xmpp`, after stopping the owning daemon. Run as the same
+OS account that owns the vault and state directory:
+
+```sh
+zeroclaw channel xmpp-inbox inspect VAULT_ROOT STATE_DIR ALIAS ACCOUNT PEER MESSAGE_ID
+zeroclaw channel xmpp-inbox release-returned VAULT_ROOT STATE_DIR ALIAS ACCOUNT PEER MESSAGE_ID REVIEW_TOKEN EVIDENCE_REFERENCE
+zeroclaw channel xmpp-inbox inspect-release VAULT_ROOT STATE_DIR ALIAS ACCOUNT PEER MESSAGE_ID
+```
+
+Use canonical absolute directory paths. `VAULT_ROOT` is the existing directory
+containing `.secret_key`; `STATE_DIR` contains the alias's `omemo.sqlite3`.
+Inspection returns authenticated metadata and a review token, never message
+content or private keys. Review the linked runtime history or terminal control
+outcome before passing the exact token and a bounded operator evidence reference
+to `release-returned`. The command requires exclusive ownership, refuses pending
+or uncertain admitted work and stale tokens, and atomically preserves an
+encrypted identity-bound release receipt and the canonical replay marker while
+removing the returned payload. Resume the daemon after the review. No agent tool,
+background maintenance job, automatic bulk deletion or replay is registered.
+
+Known pre-turn outcomes (unowned route, budget/lane refusal, retired agent,
+hook cancellation, and cancellation while queued) are recorded as terminal
+control outcomes without inventing a runtime-history link. An aborted/crashed
+execution remains admitted and unknown. Reviewed release must never be used to
+claim that returned processing proves successful tools or external delivery.

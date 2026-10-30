@@ -1,4 +1,4 @@
-//! Offline isolated administrative example. No agent/channel tool registration.
+//! Supported offline operator recovery. Never registered as an agent tool.
 use super::vault::VaultInboxCipher;
 use crate::xmpp_omemo::{
     inbox::{self, InboxCipher, Phase},
@@ -105,4 +105,139 @@ pub fn run(args: &[String]) -> Result<Value> {
         },
     )?;
     Ok(json!({"operation":operation,"released":true,"replayed":false}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::xmpp_omemo::channel_state::ChannelState;
+    use anyhow::Context;
+    use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn native_inbox_operator_release_restores_capacity_without_replay() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
+        let vault = zeroclaw_config::secrets::SecretStore::new(root.path(), true);
+        vault.encrypt("synthetic fixture bootstrap")?;
+        let cipher: Arc<dyn InboxCipher> = Arc::new(VaultInboxCipher {
+            store: vault,
+            alias: "private".into(),
+        });
+        let state = root.path().join("state");
+        drop(ChannelState::open_or_initialize(
+            &state,
+            "bob@example.test",
+            cipher.clone(),
+            64000,
+        )?);
+        let mut owner = PrivateStore::open_existing(&state)?;
+        let db = owner.connection();
+        for index in 0..1024 {
+            let id = format!("fixture-{index}");
+            let tx = db.transaction()?;
+            inbox::stage(
+                &tx,
+                &cipher,
+                "bob@example.test",
+                "alice@example.test",
+                &id,
+                101,
+                [7; 32],
+                b"synthetic",
+            )?;
+            tx.execute(
+                "INSERT INTO seen(sender,id) VALUES(?1,?2)",
+                rusqlite::params!["alice@example.test", &id],
+            )?;
+            tx.commit()?;
+            ensure!(
+                inbox::admit(db, "alice@example.test", &id)?,
+                "Fixture admission failed"
+            );
+            inbox::control_returned(
+                db,
+                &cipher,
+                "bob@example.test",
+                "alice@example.test",
+                &id,
+                "unowned_route",
+            )?;
+        }
+        let tx = db.transaction()?;
+        ensure!(
+            inbox::stage(
+                &tx,
+                &cipher,
+                "bob@example.test",
+                "alice@example.test",
+                "next",
+                101,
+                [7; 32],
+                b"next"
+            )
+            .is_err(),
+            "Cap ignored"
+        );
+        tx.rollback()?;
+        let args = vec![
+            "inspect".into(),
+            root.path().display().to_string(),
+            state.display().to_string(),
+            "private".into(),
+            "bob@example.test".into(),
+            "alice@example.test".into(),
+            "fixture-0".into(),
+        ];
+        ensure!(run(&args).is_err(), "Operator crossed live exclusive owner");
+        drop(owner);
+        let inspected = run(&args)?;
+        ensure!(
+            inspected["phase"] == "returned" && inspected.get("content").is_none(),
+            "Unsafe review output"
+        );
+        let token = inspected["review_token"]
+            .as_str()
+            .context("Review token missing")?;
+        let mut release = args.clone();
+        release[0] = "release-returned".into();
+        release.push(token.into());
+        release.push("synthetic-review-receipt".into());
+        ensure!(
+            run(&release)?["released"] == true,
+            "Production release failed"
+        );
+        ensure!(run(&release).is_err(), "Repeat release recreated state");
+        let mut owner = PrivateStore::open_existing(&state)?;
+        let db = owner.connection();
+        let tx = db.transaction()?;
+        ensure!(
+            inbox::stage(
+                &tx,
+                &cipher,
+                "bob@example.test",
+                "alice@example.test",
+                "fixture-0",
+                101,
+                [7; 32],
+                b"replay"
+            )
+            .is_err(),
+            "Released original replayed"
+        );
+        inbox::stage(
+            &tx,
+            &cipher,
+            "bob@example.test",
+            "alice@example.test",
+            "next",
+            101,
+            [7; 32],
+            b"next",
+        )?;
+        tx.commit()?;
+        let count: i64 =
+            db.query_row("SELECT count(*) FROM native_omemo_inbox", [], |r| r.get(0))?;
+        ensure!(count == 1024, "New ingress did not regain one slot");
+        Ok(())
+    }
 }

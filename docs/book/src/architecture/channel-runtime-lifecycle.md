@@ -59,7 +59,9 @@ unknown and must not be blindly replayed. Channels without durable ingress keep
 the default no-op callbacks. `requires_individual_ingress` opts durable messages
 out of debounce coalescing, preserving a history link for each executed input.
 `inbound_control_returned` records dispatcher control processing separately when
-there is no agent turn, without inventing an agent/history reference.
+there is no agent turn, without inventing an agent/history reference. Known
+pre-turn drops/refusals and per-turn queued cancellation record terminal control
+outcomes too; aborting a generation or crashing does not assert completion.
 
 Long-running channels and webhook-backed channels have different transport
 entry points, but they should converge on the same message shape:
