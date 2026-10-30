@@ -1611,8 +1611,6 @@ pub(crate) fn run_tool_call_loop_with_initial_ingress<'a>(
     )))
 }
 
-/// Non-streamed Agent turns own the guard without steering ingress.
-/// Low-level and nested SOP callers use the public wrapper without a guard.
 pub(crate) fn run_tool_call_loop_with_guard<'a>(
     p: ToolLoop<'a>,
     repetition_guard: Option<&'a std::sync::Mutex<repetition::RepetitionGuard>>,
