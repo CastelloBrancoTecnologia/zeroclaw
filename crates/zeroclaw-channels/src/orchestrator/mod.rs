@@ -1323,10 +1323,10 @@ impl ConversationLaneRegistry {
                 .as_ref()
                 .is_some_and(|registration| registration.cancellation.is_cancelled())
         {
-            if !self.cancel.is_cancelled() {
-                if let Some(receipt) = &turn.ingress_receipt {
-                    receipt.control_returned("queued_cancelled").await;
-                }
+            if !self.cancel.is_cancelled()
+                && let Some(receipt) = &turn.ingress_receipt
+            {
+                receipt.control_returned("queued_cancelled").await;
             }
             return;
         }
@@ -1366,10 +1366,10 @@ impl ConversationLaneRegistry {
         let Some(turn_lease) =
             self.reserve_turn(turn.ctx.agent_alias.as_str(), turn.agent_generation)
         else {
-            if !self.cancel.is_cancelled() {
-                if let Some(receipt) = &turn.ingress_receipt {
-                    receipt.control_returned("agent_retired").await;
-                }
+            if !self.cancel.is_cancelled()
+                && let Some(receipt) = &turn.ingress_receipt
+            {
+                receipt.control_returned("agent_retired").await;
             }
             return;
         };
@@ -1516,10 +1516,10 @@ async fn route_inbound_slot(
         .as_ref()
         .is_some_and(|registration| registration.cancellation.is_cancelled())
     {
-        if !lanes.cancel.is_cancelled() {
-            if let Some(receipt) = &turn.ingress_receipt {
-                receipt.control_returned("queued_cancelled").await;
-            }
+        if !lanes.cancel.is_cancelled()
+            && let Some(receipt) = &turn.ingress_receipt
+        {
+            receipt.control_returned("queued_cancelled").await;
         }
         return;
     }
@@ -1530,10 +1530,10 @@ async fn route_inbound_slot(
     let hooked = {
         let Some(_lease) = lanes.reserve_turn(ctx.agent_alias.as_str(), turn.agent_generation)
         else {
-            if !lanes.cancel.is_cancelled() {
-                if let Some(receipt) = &turn.ingress_receipt {
-                    receipt.control_returned("agent_retired").await;
-                }
+            if !lanes.cancel.is_cancelled()
+                && let Some(receipt) = &turn.ingress_receipt
+            {
+                receipt.control_returned("agent_retired").await;
             }
             return;
         };
@@ -1559,10 +1559,10 @@ async fn route_inbound_slot(
     match lanes.enqueue(&routed_key, turn) {
         LaneAdmission::Enqueued => {}
         LaneAdmission::Refused(refused) => {
-            if !lanes.cancel.is_cancelled() {
-                if let Some(receipt) = &refused.ingress_receipt {
-                    receipt.control_returned("lane_refused").await;
-                }
+            if !lanes.cancel.is_cancelled()
+                && let Some(receipt) = &refused.ingress_receipt
+            {
+                receipt.control_returned("lane_refused").await;
             }
             send_conversation_busy(
                 &refused.ctx,
@@ -1575,10 +1575,10 @@ async fn route_inbound_slot(
         // Dropping the turn releases its registration (marking its
         // completion for any waiting successor) and its admission permit.
         LaneAdmission::Canceled(canceled) => {
-            if !lanes.cancel.is_cancelled() {
-                if let Some(receipt) = &canceled.ingress_receipt {
-                    receipt.control_returned("queued_cancelled").await;
-                }
+            if !lanes.cancel.is_cancelled()
+                && let Some(receipt) = &canceled.ingress_receipt
+            {
+                receipt.control_returned("queued_cancelled").await;
             }
             drop(canceled);
         }
@@ -11857,10 +11857,10 @@ async fn run_conversation_turn(
     if registration.cancellation.is_cancelled() {
         // Shutdown/abort remains uncertain; only a known per-turn cancellation
         // before execution is a terminal non-turn outcome.
-        if !generation_cancel.is_cancelled() {
-            if let Some(receipt) = &ingress_receipt {
-                receipt.control_returned("queued_cancelled").await;
-            }
+        if !generation_cancel.is_cancelled()
+            && let Some(receipt) = &ingress_receipt
+        {
+            receipt.control_returned("queued_cancelled").await;
         }
         drop(registration);
         dispatch_ownership.release();
