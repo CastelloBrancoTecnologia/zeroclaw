@@ -9901,7 +9901,7 @@ mod tool_lifecycle_abandonment_tests {
     }
 
     #[tokio::test]
-    async fn loop_closeout_preserves_reported_usage_for_summary_trim() {
+    async fn loop_closeout_preserves_reported_usage_before_summary_dispatch() {
         let provider = ScriptedProvider {
             responses: Mutex::new(vec![ChatResponse {
                 text: None,
@@ -9926,7 +9926,7 @@ mod tool_lifecycle_abandonment_tests {
             ChatMessage::assistant("earlier answer"),
             ChatMessage::user("run"),
         ];
-        let output = run_loop_review_scenario_with_context_budget(
+        let error = run_loop_review_scenario_with_context_budget(
             &provider,
             &tools,
             None,
@@ -9938,8 +9938,11 @@ mod tool_lifecycle_abandonment_tests {
             2_000,
         )
         .await
-        .expect("calibrated closeout");
-        assert!(output.contains(&crate::i18n::get_required_cli_string("turn-loop-detected")));
+        .expect_err("Calibration must refuse a summary whose retained minimum cannot fit");
+        let exceeded = super::context_window_exceeded_from_error(&error)
+            .expect("Summary rejection must retain its typed context-capacity cause");
+        assert_eq!(exceeded.model_context_window, 2_000);
+        assert!(exceeded.estimated_tokens > 2_000);
         assert!(
             !history
                 .iter()
@@ -9964,6 +9967,13 @@ mod tool_lifecycle_abandonment_tests {
         let image_cache = None;
         let mut crumb_present = false;
         let mut injected_preamble = None;
+        let mut context_limits =
+            zeroclaw_config::schema::ResolvedContextLimits::legacy_fallback(context_token_budget);
+        if context_token_budget > 0 {
+            context_limits.model_context_window = context_token_budget;
+            context_limits.model_context_window_source =
+                zeroclaw_config::schema::ModelContextWindowSource::Configured;
+        }
         run_tool_call_loop(ToolLoop {
             parent_agent_alias: None,
             sop_reassembly: None,
@@ -9991,10 +10001,7 @@ mod tool_lifecycle_abandonment_tests {
                 strict_tool_parsing: false,
                 parallel_tools,
                 max_tool_result_chars: 0,
-                context_limits: zeroclaw_config::schema::ResolvedContextLimits {
-                    context_token_budget,
-                    ..zeroclaw_config::schema::ResolvedContextLimits::legacy_fallback(0)
-                },
+                context_limits,
                 context_limits_resolver: None,
                 receipt_generator: None,
                 knobs,
