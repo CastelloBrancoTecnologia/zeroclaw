@@ -10991,22 +10991,6 @@ async fn process_channel_message_body(
                 model_notice,
             );
 
-            ::zeroclaw_log::record!(
-                INFO,
-                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Outbound)
-                    .with_outcome(::zeroclaw_log::EventOutcome::Success)
-                    .with_duration(
-                        u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
-                    )
-                    .with_attrs(::serde_json::json!({
-                        "model_provider": route.model_provider,
-                        "model": route.model,
-                        "sender": msg.sender,
-                        "response": scrub_credentials(&delivered_response),
-                    })),
-                "channel_message_outbound"
-            );
-
             if !history_resync_failed {
                 append_sender_turn(
                     ctx.as_ref(),
