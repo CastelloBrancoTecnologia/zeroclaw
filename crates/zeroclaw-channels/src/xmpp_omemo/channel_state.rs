@@ -375,10 +375,18 @@ impl ChannelState {
             |r| r.get(0),
         )?;
         if phase == "pending" {
+            let message = crate::xmpp_omemo::inbox::pending_message(
+                self.owner.connection(),
+                &self.cipher,
+                &self.account,
+                peer,
+                id,
+            )?;
             ensure!(
-                self.pending(policy)?
-                    .iter()
-                    .any(|p| p.peer == peer && p.id == id),
+                !message.content.trim().is_empty()
+                    && message.content.chars().count() <= self.max_chars
+                    && is_authorized_pin(peer, message.pin, policy)?
+                    && self.pin(peer, message.device, policy)? == message.pin,
                 "Ingress identity is no longer authorized"
             );
         }
@@ -622,6 +630,129 @@ mod policy_tests {
             db.query_row("SELECT count(*) FROM state", [], |r| r.get::<_, i64>(0))?,
             before
         );
+        Ok(())
+    }
+    #[test]
+    fn pending_cap_is_transactional_and_admission_does_not_scan_other_envelopes()
+    -> anyhow::Result<()> {
+        use base64::Engine;
+        use std::sync::Arc;
+        let root = tempfile::tempdir()?;
+        let vault = crate::xmpp::vault::VaultInboxCipher {
+            store: zeroclaw_config::secrets::SecretStore::new(root.path(), true),
+            alias: "bounded".into(),
+        };
+        vault.store.encrypt("synthetic initialization")?;
+        let cipher: Arc<dyn crate::xmpp_omemo::inbox::InboxCipher> = Arc::new(vault);
+        let mut state = super::ChannelState::open_or_initialize(
+            &root.path().join("bounded"),
+            "bob@example.test",
+            cipher.clone(),
+            64000,
+        )?;
+        let db = state.owner.connection();
+        for n in 0..128 {
+            let tx = db.transaction()?;
+            crate::xmpp_omemo::inbox::stage(
+                &tx,
+                &cipher,
+                "bob@example.test",
+                "alice@example.test",
+                &n.to_string(),
+                101,
+                [1; 32],
+                b"synthetic",
+            )?;
+            tx.commit()?;
+        }
+        {
+            let tx = db.transaction()?;
+            assert!(
+                crate::xmpp_omemo::inbox::stage(
+                    &tx,
+                    &cipher,
+                    "bob@example.test",
+                    "alice@example.test",
+                    "overflow",
+                    101,
+                    [1; 32],
+                    b"synthetic"
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM native_omemo_inbox", [], |r| r
+                .get::<_, i64>(0))?,
+            128
+        );
+        // Simulate a valid backlog produced by the old implementation.
+        db.execute(
+            "UPDATE native_omemo_inbox SET phase='admitted' WHERE id='0'",
+            [],
+        )?;
+        {
+            let tx = db.transaction()?;
+            crate::xmpp_omemo::inbox::stage(
+                &tx,
+                &cipher,
+                "bob@example.test",
+                "alice@example.test",
+                "legacy",
+                101,
+                [1; 32],
+                b"synthetic",
+            )?;
+            tx.commit()?;
+        }
+        db.execute(
+            "UPDATE native_omemo_inbox SET phase='pending' WHERE id='0'",
+            [],
+        )?;
+        assert_eq!(
+            crate::xmpp_omemo::inbox::pending(db, &cipher, "bob@example.test")?.len(),
+            129,
+            "Legacy oversize backlog remains drainable after restart"
+        );
+        // Corrupt only the unrelated row to exercise exact-envelope admission.
+        db.execute("UPDATE native_omemo_inbox SET sealed=(SELECT sealed FROM native_omemo_inbox WHERE id='0') WHERE id='legacy'", [])?;
+        assert!(crate::xmpp_omemo::inbox::pending(db, &cipher, "bob@example.test").is_err());
+        // The unrelated bad legacy row must not be read to authenticate a specific receipt.
+        assert_eq!(
+            crate::xmpp_omemo::inbox::pending_message(
+                db,
+                &cipher,
+                "bob@example.test",
+                "alice@example.test",
+                "127"
+            )?
+            .id,
+            "127"
+        );
+        assert!(
+            state.admit("alice@example.test", "127", &[]).is_err(),
+            "Revoked policy still refuses receipt"
+        );
+        let db = state.owner.connection();
+        let mut identities = vec![5u8];
+        identities.extend([2u8; 32]);
+        identities.push(5);
+        identities.extend([1u8; 32]);
+        let prefix = "omemo//eu.siacs.conversations.axolotl/alice@example.test/101/";
+        db.execute(
+            "INSERT INTO state(key,value) VALUES(?1,?2)",
+            rusqlite::params![
+                format!("{prefix}associated_data"),
+                serde_json::to_string(&super::URL_SAFE.encode(identities))?
+            ],
+        )?;
+        db.execute(
+            "INSERT INTO state(key,value) VALUES(?1,?2)",
+            rusqlite::params![format!("{prefix}initiation"), "\"ACTIVE\""],
+        )?;
+        let policy = vec![format!("alice@example.test {}", hex::encode([1u8; 32]))];
+        assert!(state.admit("alice@example.test", "127", &policy)?);
+        assert!(!state.admit("alice@example.test", "127", &policy)?);
         Ok(())
     }
     #[test]

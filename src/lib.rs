@@ -261,8 +261,8 @@ pub enum ServiceCommands {
 #[derive(Subcommand, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ChannelCommands {
     /// Inspect or release reviewed returned native OMEMO ingress while offline.
-    // i18n-exempt: clap derive help requires a compile-time literal.
     #[cfg(all(feature = "channel-xmpp", target_os = "linux"))]
+    // i18n-exempt: clap derive help requires a compile-time literal.
     #[command(
         long_about = "Offline native OMEMO inbox administration. Stop the owning daemon first. Arguments: OP VAULT_ROOT STATE_DIR ALIAS ACCOUNT PEER ID [REVIEW_TOKEN EVIDENCE]. OP is inspect, inspect-release, or release-returned. Pending and uncertain admitted work cannot be released."
     )]

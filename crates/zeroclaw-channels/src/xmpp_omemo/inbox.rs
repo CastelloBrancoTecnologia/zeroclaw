@@ -110,6 +110,12 @@ pub fn stage(
     ensure!(!released, "Reviewed ingress must not be staged again");
     let count: i64 = tx.query_row("SELECT count(*) FROM native_omemo_inbox", [], |r| r.get(0))?;
     ensure!(count < 1024, "Encrypted inbox retention limit reached");
+    let pending_count: i64 = tx.query_row(
+        "SELECT count(*) FROM native_omemo_inbox WHERE phase='pending'",
+        [],
+        |r| r.get(0),
+    )?;
+    ensure!(pending_count < 128, "Encrypted inbox pending limit reached");
     let (_, own, own_device) = identity(tx, account)?;
     let body = Body {
         account: account.into(),
@@ -142,8 +148,12 @@ pub fn pending(
 ) -> Result<Vec<Pending>> {
     let tx = conn.transaction()?;
     let (_, own, own_device) = identity(&tx, account)?;
-    let rows:Vec<(String,String,String)>=tx.prepare("SELECT peer,id,sealed FROM native_omemo_inbox WHERE phase='pending' ORDER BY rowid LIMIT 129")?.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<std::result::Result<_,_>>()?;
-    ensure!(rows.len() <= 128, "Too many pending ingress messages");
+    let rows:Vec<(String,String,String)>=tx.prepare("SELECT peer,id,sealed FROM native_omemo_inbox WHERE phase='pending' ORDER BY rowid LIMIT 1025")?.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<std::result::Result<_,_>>()?;
+    // Drain legacy backlogs without making a previously oversized queue unrecoverable.
+    ensure!(
+        rows.len() <= 1024,
+        "Encrypted inbox retention limit exceeded"
+    );
     let mut result = Vec::new();
     for (peer, id, sealed) in rows {
         let mut body = decode_body(cipher, account, &peer, &id, own, own_device, &sealed)?;
@@ -155,6 +165,32 @@ pub fn pending(
             content: std::mem::take(&mut body.content),
         });
     }
+    tx.commit()?;
+    Ok(result)
+}
+/// Authenticate exactly one pending envelope; unrelated backlog cannot block admission.
+pub fn pending_message(
+    conn: &mut Connection,
+    cipher: &Arc<dyn InboxCipher>,
+    account: &str,
+    peer: &str,
+    id: &str,
+) -> Result<Pending> {
+    let tx = conn.transaction()?;
+    let (_, own, own_device) = identity(&tx, account)?;
+    let sealed: String = tx.query_row(
+        "SELECT sealed FROM native_omemo_inbox WHERE peer=?1 AND id=?2 AND phase='pending'",
+        params![peer, id],
+        |r| r.get(0),
+    )?;
+    let mut body = decode_body(cipher, account, peer, id, own, own_device, &sealed)?;
+    let result = Pending {
+        peer: peer.into(),
+        id: id.into(),
+        device: body.device,
+        pin: body.pin,
+        content: std::mem::take(&mut body.content),
+    };
     tx.commit()?;
     Ok(result)
 }
