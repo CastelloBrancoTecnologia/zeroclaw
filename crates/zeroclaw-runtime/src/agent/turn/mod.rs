@@ -3695,17 +3695,17 @@ async fn run_tool_call_loop_impl<'a>(
 
         // A completed tool may have queued authorized SOP work in this batch.
         // Settle that queue before closing, rather than orphaning a started run.
-        if loop_stopped {
-            completion_limit = max_iter::CompletionLimit::LoopDetected;
-            break;
-        }
-
         pending_reported_usage = reported_input_tokens.map(|reported| ReportedRequestUsage {
             provider_name: served_provider.clone(),
             model: served_model_key.to_string(),
             reported_tokens: reported as usize,
             estimated_tokens: reported_population_estimated,
         });
+
+        if loop_stopped {
+            completion_limit = max_iter::CompletionLimit::LoopDetected;
+            break;
+        }
     }
 
     if let Some(budget) = shared_budget.as_ref() {
@@ -9889,12 +9889,78 @@ mod tool_lifecycle_abandonment_tests {
         history: &mut Vec<ChatMessage>,
         knobs: &LoopKnobs,
     ) -> anyhow::Result<String> {
+        run_loop_review_scenario_with_context_budget(
+            provider,
+            tools_registry,
+            hooks,
+            history,
+            knobs,
+            0,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn loop_closeout_preserves_reported_usage_for_summary_trim() {
+        let provider = ScriptedProvider {
+            responses: Mutex::new(vec![ChatResponse {
+                text: None,
+                tool_calls: (0..4)
+                    .map(|i| {
+                        tool_call(&format!("repeat-{i}"), "repeat", serde_json::json!({"n":1}))
+                    })
+                    .collect(),
+                usage: Some(zeroclaw_providers::traits::TokenUsage {
+                    input_tokens: Some(100_000),
+                    ..Default::default()
+                }),
+                reasoning_content: None,
+            }]),
+        };
+        let tools = registry_with(vec![Box::new(EchoTool {
+            name: "repeat".into(),
+        })]);
+        let mut history = vec![
+            ChatMessage::system("test"),
+            ChatMessage::user(format!("discard-at-summary {}", "old ".repeat(50))),
+            ChatMessage::assistant("earlier answer"),
+            ChatMessage::user("run"),
+        ];
+        let output = run_loop_review_scenario_with_context_budget(
+            &provider,
+            &tools,
+            None,
+            &mut history,
+            &LoopKnobs {
+                dedup_enabled: false,
+                ..Default::default()
+            },
+            2_000,
+        )
+        .await
+        .expect("calibrated closeout");
+        assert!(output.contains(&crate::i18n::get_required_cli_string("turn-loop-detected")));
+        assert!(
+            !history
+                .iter()
+                .any(|m| m.content.contains("discard-at-summary")),
+            "The tools-free summary must trim with the just-reported token calibration"
+        );
+    }
+
+    async fn run_loop_review_scenario_with_context_budget(
+        provider: &ScriptedProvider,
+        tools_registry: &crate::tools::scoped::ScopedToolRegistry,
+        hooks: Option<&crate::hooks::HookRunner>,
+        history: &mut Vec<ChatMessage>,
+        knobs: &LoopKnobs,
+        context_token_budget: usize,
+    ) -> anyhow::Result<String> {
         let observer = &NoopObserver;
         let pacing = &zeroclaw_config::schema::PacingConfig::default();
         let turn_id = "loop-review";
         let parallel_tools = false;
         let cancellation_token = None;
-        let context_token_budget = 0;
         let image_cache = None;
         let mut crumb_present = false;
         let mut injected_preamble = None;
