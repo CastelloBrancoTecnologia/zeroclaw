@@ -131,7 +131,7 @@ use zeroclaw_runtime::agent::execution_tree_budget::ExecutionTreeBudget;
 use zeroclaw_runtime::agent::loop_::{
     LoopKnobs, ResolvedAgentExecution, ResolvedIo, ResolvedModelAccess, ResolvedRuntimeKnobs,
     ToolLoop, append_pinned_mcp_section, apply_text_tool_prompt_policy,
-    build_tool_instructions_from_specs, is_model_switch_requested, scope_session_key,
+    build_tool_instructions_for_names, is_model_switch_requested, scope_session_key,
     scope_thread_id, scrub_credentials,
 };
 use zeroclaw_runtime::agent::system_prompt::build_skills_prompt_with_effective_tools;
