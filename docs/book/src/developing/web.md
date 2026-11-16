@@ -98,3 +98,15 @@ and `structuredClone()`.
 - Edge 111+
 - Firefox 113+
 - Safari 16.2+
+
+## HTTP credential header schemes
+
+For a service such as DefectDojo that expects `Authorization: Token <key>`,
+add an API token credential in **Storage → Secrets** and select
+**Authorization: Token** as its header. Enter only the key in the secret
+field. Set the HTTPS origin to the server's scheme, hostname and optional
+port. Put the API path in the HTTP request URL. In **Permissions**, grant
+the credential to HTTP Request, then pass only its alias as the tool's
+`credential` argument. The gateway's origin binding applies to all
+supported schemes. Existing Bearer, X-API-Key and HTTP Basic entries
+retain their configured scheme.

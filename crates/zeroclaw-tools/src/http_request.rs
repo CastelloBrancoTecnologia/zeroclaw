@@ -498,6 +498,9 @@ impl HttpRequestTool {
                     ScopedApiKeyHeader::Bearer => {
                         (AUTHORIZATION, format!("Bearer {value}"), vec![value])
                     }
+                    ScopedApiKeyHeader::Token => {
+                        (AUTHORIZATION, format!("Token {value}"), vec![value])
+                    }
                     ScopedApiKeyHeader::XApiKey => (
                         HeaderName::from_static("x-api-key"),
                         value.clone(),
@@ -738,7 +741,7 @@ impl Tool for HttpRequestTool {
                 },
                 "credential": {
                     "type": "string",
-                    "description": "Operator-managed credential alias bound to this HTTPS origin. Supports Bearer tokens, X-API-Key, and HTTP Basic. Pass only the alias."
+                    "description": "Operator-managed credential alias bound to this HTTPS origin. Supports Bearer tokens, Authorization: Token, X-API-Key, and HTTP Basic. Pass only the alias."
                 },
                 "auth_secret": {
                     "type": "string",
@@ -1358,87 +1361,102 @@ mod tests {
     async fn scoped_credential_cannot_cross_https_origins() {
         use zeroclaw_config::schema::{ScopedApiKeyHeader, ScopedHttpAuth, ScopedHttpCredential};
 
-        let dir = tempfile::tempdir().unwrap();
-        let mut tool = HttpRequestTool::new(
-            Arc::new(SecurityPolicy::default()),
-            vec!["*".into()],
-            1024,
-            10,
-            false,
-            vec![],
-            vec![],
-        )
-        .unwrap();
-        tool.scoped_credential_fixture(
-            dir.path(),
-            ScopedHttpCredential {
-                origin: "https://example.com".into(),
-                http_allowed: true,
-                source: Default::default(),
-                auth: ScopedHttpAuth::ApiKey {
-                    value: "fixture-key".into(),
-                    header: ScopedApiKeyHeader::XApiKey,
+        for use_token in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut tool = HttpRequestTool::new(
+                Arc::new(SecurityPolicy::default()),
+                vec!["*".into()],
+                1024,
+                10,
+                false,
+                vec![],
+                vec![],
+            )
+            .unwrap();
+            tool.scoped_credential_fixture(
+                dir.path(),
+                ScopedHttpCredential {
+                    origin: "https://example.com".into(),
+                    http_allowed: true,
+                    source: Default::default(),
+                    auth: ScopedHttpAuth::ApiKey {
+                        value: "fixture-key".into(),
+                        header: if use_token {
+                            ScopedApiKeyHeader::Token
+                        } else {
+                            ScopedApiKeyHeader::XApiKey
+                        },
+                    },
                 },
-            },
-        );
-        let mut headers = HeaderMap::new();
-        for url in [
-            "http://example.com",
-            "https://other.example.com",
-            "https://example.com:8443",
-        ] {
+            );
+            let mut headers = HeaderMap::new();
+            for url in [
+                "http://example.com",
+                "https://other.example.com",
+                "https://example.com:8443",
+            ] {
+                let target = ValidatedHttpRequestTarget {
+                    url: url.into(),
+                    host: String::new(),
+                    resolved_addrs: Vec::new(),
+                };
+                assert!(
+                    tool.apply_scoped_credential(&mut headers, "TEST", &target)
+                        .await
+                        .is_err()
+                );
+                assert!(headers.is_empty());
+            }
             let target = ValidatedHttpRequestTarget {
-                url: url.into(),
+                url: "https://example.com/api".into(),
                 host: String::new(),
                 resolved_addrs: Vec::new(),
             };
             assert!(
                 tool.apply_scoped_credential(&mut headers, "TEST", &target)
                     .await
+                    .is_ok()
+            );
+            let (name, expected) = if use_token {
+                ("authorization", "Token fixture-key")
+            } else {
+                ("x-api-key", "fixture-key")
+            };
+            assert_eq!(headers[name], expected);
+            assert!(headers[name].is_sensitive());
+            tool.scoped_credential_fixture(
+                dir.path(),
+                ScopedHttpCredential {
+                    origin: "https://example.com".into(),
+                    http_allowed: false,
+                    source: Default::default(),
+                    auth: ScopedHttpAuth::ApiKey {
+                        value: "fixture-key".into(),
+                        header: if use_token {
+                            ScopedApiKeyHeader::Token
+                        } else {
+                            ScopedApiKeyHeader::XApiKey
+                        },
+                    },
+                },
+            );
+            headers.clear();
+            assert!(
+                tool.apply_scoped_credential(&mut headers, "TEST", &target)
+                    .await
                     .is_err()
             );
             assert!(headers.is_empty());
-        }
-        let target = ValidatedHttpRequestTarget {
-            url: "https://example.com/api".into(),
-            host: String::new(),
-            resolved_addrs: Vec::new(),
-        };
-        assert!(
-            tool.apply_scoped_credential(&mut headers, "TEST", &target)
-                .await
-                .is_ok()
-        );
-        assert_eq!(headers["x-api-key"], "fixture-key");
-        assert!(headers["x-api-key"].is_sensitive());
-        tool.scoped_credential_fixture(
-            dir.path(),
-            ScopedHttpCredential {
-                origin: "https://example.com".into(),
-                http_allowed: false,
-                source: Default::default(),
-                auth: ScopedHttpAuth::ApiKey {
-                    value: "fixture-key".into(),
-                    header: ScopedApiKeyHeader::XApiKey,
-                },
-            },
-        );
-        headers.clear();
-        assert!(
-            tool.apply_scoped_credential(&mut headers, "TEST", &target)
-                .await
-                .is_err()
-        );
-        assert!(headers.is_empty());
 
-        let mut forged = HeaderMap::new();
-        forged.insert(HOST, HeaderValue::from_static("another.example.com"));
-        assert!(
-            tool.apply_scoped_credential(&mut forged, "TEST", &target)
-                .await
-                .is_err()
-        );
-        assert!(!forged.contains_key("x-api-key"));
+            let mut forged = HeaderMap::new();
+            forged.insert(HOST, HeaderValue::from_static("another.example.com"));
+            assert!(
+                tool.apply_scoped_credential(&mut forged, "TEST", &target)
+                    .await
+                    .is_err()
+            );
+            assert!(!forged.contains_key("x-api-key"));
+        }
     }
 
     #[test]
