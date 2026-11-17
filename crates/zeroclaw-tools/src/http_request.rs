@@ -1424,6 +1424,16 @@ mod tests {
             };
             assert_eq!(headers[name], expected);
             assert!(headers[name].is_sensitive());
+
+            let mut forged = HeaderMap::new();
+            forged.insert(HOST, HeaderValue::from_static("another.example.com"));
+            assert!(
+                tool.apply_scoped_credential(&mut forged, "TEST", &target)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(forged.len(), 1);
+
             tool.scoped_credential_fixture(
                 dir.path(),
                 ScopedHttpCredential {
@@ -1448,14 +1458,6 @@ mod tests {
             );
             assert!(headers.is_empty());
 
-            let mut forged = HeaderMap::new();
-            forged.insert(HOST, HeaderValue::from_static("another.example.com"));
-            assert!(
-                tool.apply_scoped_credential(&mut forged, "TEST", &target)
-                    .await
-                    .is_err()
-            );
-            assert!(!forged.contains_key("x-api-key"));
         }
     }
 
