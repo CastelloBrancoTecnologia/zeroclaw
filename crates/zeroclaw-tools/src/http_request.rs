@@ -1457,7 +1457,6 @@ mod tests {
                     .is_err()
             );
             assert!(headers.is_empty());
-
         }
     }
 
