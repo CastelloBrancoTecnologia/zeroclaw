@@ -38,8 +38,39 @@ The browser destination list and the credential grant are independent controls. 
 
 In the Roundcube test, Keycloak is the **OIDC provider of the target application**. That test is independent of the OIDC session used by an operator to access the Jarvis dashboard. The simulated browser-form tests use a separate controlled site.
 
+
+## Production credential editor and layered permissions
+
+The screenshots below show blank creation forms from the integrated deployment. The grant editor was captured separately, with the credential alias redacted and a synthetic origin shown. Dashboard user permissions govern what the operator can administer. Credential usage grants govern which consumer and destination may use a particular alias. The browser destination allowlist is a separate network-facing control.
+
+| Live control | Capture |
+| --- | --- |
+| Username and password | [Create form](jarvis-form-password.png) |
+| API key and header | [Create form](jarvis-form-api-key.png) |
+| SSH key and planned destinations | [Create form](jarvis-form-ssh.png) |
+| TOTP seed | [Create form](jarvis-form-totp.png) |
+| Credential grant for a consumer and HTTPS origin | [Grant form](jarvis-form-usage-permissions.png) |
+
+## Production prompts and observed results
+
+The excerpt images were rendered from messages retrieved from the existing Jarvis chat. They are redacted excerpts rather than full screenshots of the conversation. The SSH prompt also has a direct UI crop. The webmail exception had already expired and was not reopened for the report.
+
+| Case | Prompt and result evidence |
+| --- | --- |
+| Managed SSH | [Original prompt from the WebUI](jarvis-ssh-prompt.png) and [sanitized prompt/result excerpt](jarvis-chat-excerpt-ssh.png). The read-only command returned JARVIS_SSH_OK. |
+| GitHub.com with password and TOTP | [Sanitized prompt/result excerpt](jarvis-chat-excerpt-github.png). The existing PR evidence documents the account-menu check and browser closure. |
+| Roundcube and application Keycloak OIDC | [Sanitized prompt/result excerpt](jarvis-chat-excerpt-webmail.png). The separate server evidence records the OIDC callback and the authorized mail view response. |
+| Simulated site without TOTP | [Fixture login](jarvis-simulated-login.png) and [authenticated fixture result](jarvis-simulated-result.png). This test invokes the real browser form helper directly and verifies the submitted fields. It does not use a production chat prompt. |
+
+## Browser voice
+
+- [Microphone and speaker controls from the live WebUI](voice-toolbar-desktop.png)
+- [Global dictation silence setting from the live WebUI](voice-global-field-live.png) (historical screenshot)
+- [Operator-supplied voice recording](operator-voice-sample.m4a) (6.8 seconds). This recording was provided for the report. A matching synchronized browser capture proving the transcript, submit and spoken reply is still pending.
+- The voice PRs contain the historical operator results and automated regression evidence. The typed test phrase supplied by the operator is “Jarvis, please say how much is two plus two.” A separate browser narration recording has not yet been verified.
+
 ## Review request and remaining evidence
 
-The integrated production experience is why we ask reviewers to consider the complete architecture and retain the full feature scope across the PR stack. Smaller review units can be merged as their dependencies and governance allow.
+Jarvis's integrated production deployment exercises the full workflows while upstream considers the smaller PRs. We ask reviewers to consider the full workflow and preserve it across the PR stack as its dependencies and architecture decisions are resolved.
 
-This report links independently verified results and labels simulated captures. It does not yet include original prompt/result screenshots for every workflow, the live detail screens for every Secrets form or user permission, or recordings of dictation and narration. No real operator audio is attached.
+The report includes current credential forms, the browser allowlist, sanitized chat excerpts, a synthetic site test and the operator audio sample. It does not yet include a screenshot of the configured dashboard user permission profiles, full original chat captures for every PR, or a verified recording of the browser's narration.
