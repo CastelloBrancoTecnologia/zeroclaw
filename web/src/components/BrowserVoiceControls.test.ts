@@ -768,7 +768,9 @@ test('microphone waits for the initial global timeout before capture can start',
   }
 });
 
-test('OIDC voice settings enable chat controls without pairing and isolate accounts', async () => {
+test('OIDC voice settings enable chat controls without pairing and isolate accounts', async (context) => {
+  context.mock.method(crypto.subtle, 'digest', async (_algorithm: string, input: Uint8Array) =>
+    Uint8Array.from(createHash('sha256').update(input).digest()).buffer);
   const { setOidcSession } = await import('../lib/auth.ts');
   const { default: Settings } = await import('./BrowserVoiceSettings.tsx');
   const aliceKey = 'zeroclaw-oidc-voice:v2:' + createHash('sha256').update('alice').digest('hex');
@@ -785,7 +787,6 @@ test('OIDC voice settings enable chat controls without pairing and isolate accou
   try {
     setOidcSession(principal('alice'));
     await act(async () => { settings = create(createElement(Settings), options); });
-    await act(async () => { await crypto.subtle.digest('SHA-256', new TextEncoder().encode('alice')); });
     const mic = settings!.root.findAllByType('input').find(input => input.props.type === 'checkbox')!;
     await act(async () => { mic.props.onChange({ target: { checked: true } }); });
     const spokenSettings = settings!.root.findAllByType('input').filter(input => input.props.type === 'checkbox');
@@ -833,7 +834,6 @@ test('OIDC voice settings enable chat controls without pairing and isolate accou
     assert.equal(chat.root.findAllByType('button').length, 0);
     await assert.rejects(saveVoicePreferences(preferences as Parameters<typeof saveVoicePreferences>[0]));
     await act(async () => { setOidcSession(principal('alice')); });
-    await act(async () => { await crypto.subtle.digest('SHA-256', new TextEncoder().encode('alice')); });
     assert.equal(chat.root.findAllByType('button').length, 2);
     assert.ok(![...values.keys()].some(key => key.includes('alice')));
     assert.equal(chat.root.findAllByType('button')[1]!.props['aria-pressed'], true);
@@ -929,4 +929,12 @@ test('narration speaks HTML text and referenced footnotes without formatting', a
   assert.match(text, /Important warning/);
   assert.equal(text.match(/Check the qualifications/g)?.length, 1);
   assert.doesNotMatch(text, /Unreferenced|\[\^a\]/);
+});
+
+
+test('narration separates HTML lines and table cells without splitting inline words', async () => {
+  const { speechText } = await import('../lib/speechText.ts');
+  assert.equal(speechText('First<br>Second'), 'First Second');
+  assert.equal(speechText('<table><tr><td>Alpha</td><td>Beta</td></tr></table>'), 'Alpha Beta');
+  assert.equal(speechText('inter<em>operable</em>'), 'interoperable');
 });
