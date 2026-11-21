@@ -51,6 +51,8 @@ The screenshots below show blank creation forms from the integrated deployment. 
 | TOTP seed | [Create form](jarvis-form-totp.png) |
 | Credential grant for a consumer and HTTPS origin | [Grant form](jarvis-form-usage-permissions.png) |
 
+[Configured dashboard permission profiles](jarvis-dashboard-permission-profiles.png) — redacted capture rendered from the live dashboard API (HTTP 200). The native profile editor returned a picker error, so the capture shows the API readout rather than the native editor.
+
 ## Production prompts and observed results
 
 The excerpt images were rendered from messages retrieved from the existing Jarvis chat. They are redacted excerpts rather than full screenshots of the conversation. The SSH prompt also has a direct UI crop. The webmail exception had already expired and was not reopened for the report.
@@ -76,4 +78,4 @@ The excerpt images were rendered from messages retrieved from the existing Jarvi
 
 Jarvis's integrated production deployment exercises the full workflows while upstream considers the smaller PRs. We ask reviewers to consider the full workflow and preserve it across the PR stack as its dependencies and architecture decisions are resolved.
 
-The report includes current credential forms, the browser allowlist, sanitized chat excerpts, a synthetic site test and the operator audio sample. It does not yet include a screenshot of the configured dashboard user permission profiles or full original chat captures for every PR.
+The report includes current credential forms, the browser allowlist, sanitized chat excerpts, a synthetic site test and the operator audio sample. Full original chat captures for every PR are still outstanding.
