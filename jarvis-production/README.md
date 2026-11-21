@@ -41,7 +41,7 @@ In the Roundcube test, Keycloak is the **OIDC provider of the target application
 
 ## Production credential editor and layered permissions
 
-The screenshots below show blank creation forms from the integrated deployment. The grant editor was captured separately, with the credential alias redacted and a synthetic origin shown. Dashboard user permissions govern what the operator can administer. Credential usage grants govern which consumer and destination may use a particular alias. The browser destination allowlist is a separate network-facing control.
+The screenshots below show blank creation forms from the integrated deployment. The grant editor was captured separately, with the credential alias redacted and a synthetic origin shown. Dashboard permission profiles can scope what a user may do when assigned through the user roster or an OIDC mapping. We have not verified any such assignment for this deployment. Credential usage grants govern which consumer and destination may use a particular alias. The browser destination allowlist is a separate network-facing control.
 
 | Live control | Capture |
 | --- | --- |
@@ -50,8 +50,6 @@ The screenshots below show blank creation forms from the integrated deployment. 
 | SSH key and planned destinations | [Create form](jarvis-form-ssh.png) |
 | TOTP seed | [Create form](jarvis-form-totp.png) |
 | Credential grant for a consumer and HTTPS origin | [Grant form](jarvis-form-usage-permissions.png) |
-
-[Configured dashboard permission profiles](jarvis-dashboard-permission-profiles.png) — redacted capture rendered from the live dashboard API (HTTP 200). The native profile editor returned a picker error, so the capture shows the API readout rather than the native editor.
 
 ## Production prompts and observed results
 
