@@ -4,3 +4,4 @@ Chrome headless, 1280 and 390 CSS pixels. The harness renders the actual HTTP Cr
 
 - PR 12408, 391cce0: username/password and API token empty, disabled, created denied, granted, revoked, replace and delete confirmation.
 - PR 12490, cab1b6b: Token grant/revoke, create selector, preserved Token on replace, and encryption-disabled.
+- PR 12481, 8c27b43: OpenBao managed writer, link existing and reference-only states. No writes were submitted.
