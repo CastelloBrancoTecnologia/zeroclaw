@@ -66,11 +66,12 @@ The excerpt images were rendered from messages retrieved from the existing Jarvi
 
 - [Microphone and speaker controls from the live WebUI](voice-toolbar-desktop.png)
 - [Global dictation silence setting from the live WebUI](voice-global-field-live.png) (historical screenshot)
-- [Operator-supplied voice recording](operator-voice-sample.m4a) (6.8 seconds). This recording was provided for the report. A matching synchronized browser capture proving the transcript, submit and spoken reply is still pending.
-- The voice PRs contain the historical operator results and automated regression evidence. The typed test phrase supplied by the operator is “Jarvis, please say how much is two plus two.” A separate browser narration recording has not yet been verified.
+- [Operator-supplied voice recording](operator-voice-sample.m4a) (6.8 seconds). This recording was provided for the report. A separate recording and matching chat capture are linked below.
+- The voice PRs contain the historical operator results and automated regression evidence. The typed test phrase supplied by the operator is “Jarvis, please say how much is two plus two.” The operator supplied a second recording from the browser dictation and narration test. The corresponding chat capture shows “Jarvis, answer in English: how much is two plus two?” and “Two plus two equals four.”
+- [Browser dictation and narration recording](browser-dictation-and-narration.m4a) · [Matching chat capture](browser-dictation-and-narration.png).
 
 ## Review request and remaining evidence
 
 Jarvis's integrated production deployment exercises the full workflows while upstream considers the smaller PRs. We ask reviewers to consider the full workflow and preserve it across the PR stack as its dependencies and architecture decisions are resolved.
 
-The report includes current credential forms, the browser allowlist, sanitized chat excerpts, a synthetic site test and the operator audio sample. It does not yet include a screenshot of the configured dashboard user permission profiles, full original chat captures for every PR, or a verified recording of the browser's narration.
+The report includes current credential forms, the browser allowlist, sanitized chat excerpts, a synthetic site test and the operator audio sample. It does not yet include a screenshot of the configured dashboard user permission profiles or full original chat captures for every PR.
