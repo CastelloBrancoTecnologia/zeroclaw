@@ -70,6 +70,8 @@ The excerpt images were rendered from messages retrieved from the existing Jarvi
 - The voice PRs contain the historical operator results and automated regression evidence. The typed test phrase supplied by the operator is “Jarvis, please say how much is two plus two.” The operator supplied a second recording from the browser dictation and narration test. The corresponding chat capture shows “Jarvis, answer in English: how much is two plus two?” and “Two plus two equals four.”
 - [Browser dictation and narration recording](browser-dictation-and-narration.m4a) · [Matching chat capture](browser-dictation-and-narration.png).
 
+**Voice configuration for this recording.** The operator left the browser voice configured for Brazilian Portuguese (pt-BR) and asked Jarvis to answer in English for the documentation. The English pronunciation reflects that voice selection. The operator noted that “equals” was less clear than expected; an English voice would better match the reply language.
+
 ## Review request and remaining evidence
 
 Jarvis's integrated production deployment exercises the full workflows while upstream considers the smaller PRs. We ask reviewers to consider the full workflow and preserve it across the PR stack as its dependencies and architecture decisions are resolved.
