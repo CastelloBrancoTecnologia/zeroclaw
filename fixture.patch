@@ -1,0 +1,94 @@
+diff --git a/crates/zeroclaw-gateway/src/principal_gate.rs b/crates/zeroclaw-gateway/src/principal_gate.rs
+index ded9923b5..b81b22858 100644
+--- a/crates/zeroclaw-gateway/src/principal_gate.rs
++++ b/crates/zeroclaw-gateway/src/principal_gate.rs
+@@ -2725,4 +2725,89 @@ type = "string"
+         assert!(!limits.attempts.is_locked_out("203.0.113.7"));
+         assert_eq!(limits.outbound.available_permits(), OUTBOUND_BEARER_CAP);
+     }
++
++    #[tokio::test]
++    #[ignore]
++    async fn full_ui_evidence_server() {
++        use zeroclaw_config::schema::{PluginEntryConfig, PluginTlsProfileConfig};
++        let tmp = tempfile::tempdir().unwrap();
++        let mut config = paired_config();
++        config.config_path = tmp.path().join("config.toml");
++        config.data_dir = tmp.path().join("data");
++        config.secrets.encrypt = true;
++        config.plugins.plugins_dir = tmp.path().join("plugins").to_string_lossy().into_owned();
++        config.plugins.security.signature_mode = "disabled".into();
++        let plugin = tmp.path().join("plugins/test-plugin");
++        std::fs::create_dir_all(&plugin).unwrap();
++        std::fs::write(plugin.join("plugin.wasm"), b"\0asm").unwrap();
++        std::fs::write(
++            plugin.join("manifest.toml"),
++            r#"
++name = "test-plugin"
++version = "0.1.0"
++wasm_path = "plugin.wasm"
++capabilities = ["tool"]
++permissions = ["config_read"]
++
++[config_schema]
++"$schema" = "https://json-schema.org/draft/2020-12/schema"
++type = "object"
++additionalProperties = false
++
++[config_schema.properties."ca.pem"]
++type = "string"
++x-secret = true
++
++[config_schema.properties.unrelated]
++type = "string"
++"#,
++        )
++        .unwrap();
++        let instance = "zpi1_WyJ0ZXN0LXBsdWdpbiIsInRvb2wiLCJ0ZXN0LXBsdWdpbiJd";
++        let property = "ca.pem";
++        config.secrets.encrypt = true;
++        config.plugins.entries.push(PluginEntryConfig {
++            name: instance.into(),
++            egress_hosts: vec!["example.com".into()],
++            tls_profiles: vec![
++                PluginTlsProfileConfig {
++                    name: "custom".into(),
++                    hosts: vec!["example.com".into()],
++                    system_roots: true,
++                    custom_ca_secret: Some(property.into()),
++                    client_certificate_secret: None,
++                    client_private_key_secret: None,
++                },
++                PluginTlsProfileConfig {
++                    name: "public-slot".into(),
++                    hosts: vec!["example.com".into()],
++                    system_roots: true,
++                    custom_ca_secret: Some("unrelated".into()),
++                    client_certificate_secret: None,
++                    client_private_key_secret: None,
++                },
++            ],
++            config: HashMap::from([("unrelated".into(), "synthetic-neighbor".into())]),
++            ..PluginEntryConfig::default()
++        });
++
++        if std::env::var_os("UI_EVIDENCE_NO_PLUGINS").is_some() { config.plugins.entries.clear(); }
++        zeroclaw_config::secrets::SecretStore::new(tmp.path(), true).encrypt("synthetic-fixture").unwrap();
++        let state = AppState {
++            pairing: Arc::new(PairingGuard::new(true, &[], zeroclaw_config::pairing::PairingCodePolicy::default())),
++            ..crate::api::tests::test_state(config.clone())
++        };
++        println!("UI_PAIR_CODE={:?}", state.pairing.pairing_code());
++        let auth = Arc::new(GatewayInboundAuth::from_config(&config, Arc::clone(&state.pairing)).unwrap());
++        let router = crate::config_admin_router(ConfigRouteAuth::new(&auth, &state.config))
++            .route("/pair", axum::routing::post(crate::handle_pair))
++            .route("/api/pair", axum::routing::post(crate::api_pairing::submit_pairing_enhanced))
++            .route("/pair/code", axum::routing::get(crate::handle_pair_code))
++            .route("/health", axum::routing::get(|| async { axum::Json(serde_json::json!({"require_pairing":true,"paired":true})) }))
++            .route("/api/auth/methods", axum::routing::get(|| async { axum::Json(serde_json::json!({"oidc":[]})) }))
++            .with_state(state);
++        println!("UI_FIXTURE_READY root={} token=zc_paired", tmp.path().display());
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:42617").await.unwrap();
++        axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
++    }
+ }

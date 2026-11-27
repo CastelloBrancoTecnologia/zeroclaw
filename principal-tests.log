@@ -1,0 +1,39 @@
+
+running 35 tests
+test principal_gate::tests::a_native_token_unpaired_after_admission_cannot_write ... ok
+test principal_gate::tests::a_parked_write_with_its_authority_intact_lands ... ok
+test principal_gate::tests::a_present_but_blank_or_non_text_provider_header_is_refused ... ok
+test principal_gate::tests::a_revocation_after_admission_binds_the_in_flight_write ... ok
+test principal_gate::tests::a_valid_bearer_is_never_booked ... ok
+test principal_gate::tests::a_verified_but_ungranted_identity_is_not_booked ... ok
+test principal_gate::tests::an_idp_outage_is_not_billed_to_the_caller ... ok
+test principal_gate::tests::bearer_client_keys_follow_persisted_forwarded_header_trust ... ok
+test principal_gate::tests::explicit_create_and_delete_grants_admit_those_operations ... ok
+test principal_gate::tests::forwarded_headers_key_the_ledger_when_trusted ... ok
+test principal_gate::tests::full_ui_evidence_server ... ignored
+test principal_gate::tests::gateway_persist_publishes_into_the_rpc_authority ... ok
+test principal_gate::tests::http_credential_api_is_operator_only_and_defaults_to_denied ... ok
+test principal_gate::tests::invalid_native_bearer_keeps_the_legacy_denial_shape ... ok
+test principal_gate::tests::loopback_is_exempt_from_the_ledger_not_the_cap ... ok
+test principal_gate::tests::methods_outside_the_known_set_fail_closed ... ok
+test principal_gate::tests::native_bearer_failures_keep_the_legacy_shape_and_are_not_booked ... ok
+test principal_gate::tests::oidc_identity_with_no_mapped_profile_is_refused ... ok
+test principal_gate::tests::open_mode_without_provider_selection_stays_open ... ok
+test principal_gate::tests::options_preflight_stays_unauthenticated ... ok
+test principal_gate::tests::paired_native_bearer_reaches_the_handler_with_full_access ... ok
+test principal_gate::tests::path_selectors_are_enforced_on_the_complete_mutation ... ok
+test principal_gate::tests::plugin_tls_credential_api_is_operator_only_and_write_only ... ok
+test principal_gate::tests::policy_is_bound_to_the_accepted_revision_not_to_the_request ... ok
+test principal_gate::tests::rpc_revocation_binds_the_gateway_without_a_reload ... ok
+test principal_gate::tests::scoped_http_catalog_refuses_generic_gateway_writes ... ok
+test principal_gate::tests::scoped_http_rotation_preserves_only_same_origin_grants ... ok
+test principal_gate::tests::scoped_oidc_principal_is_gated_by_config_grants ... ok
+test principal_gate::tests::ten_failed_bearers_lock_the_client_out ... ok
+test principal_gate::tests::the_outbound_cap_refuses_the_seventeenth_verification ... ok
+test principal_gate::tests::the_permit_is_held_only_for_the_verification ... ok
+test principal_gate::tests::unauthenticated_requests_get_the_legacy_denial_shape ... ok
+test principal_gate::tests::unknown_provider_selection_is_denied_even_in_open_mode ... ok
+test principal_gate::tests::verbs_follow_the_effect_of_the_mutation_not_the_http_method ... ok
+test principal_gate::tests::whole_configuration_rewrites_need_the_wildcard_selector ... ok
+
+test result: ok. 34 passed; 0 failed; 1 ignored; 0 measured; 914 filtered out; finished in 7.43s

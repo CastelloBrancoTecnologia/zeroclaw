@@ -1,0 +1,6 @@
+
+running 2 tests
+test principal_gate::tests::scoped_http_catalog_refuses_generic_gateway_writes ... ok
+test principal_gate::tests::scoped_http_rotation_preserves_only_same_origin_grants ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 947 filtered out; finished in 0.30s
