@@ -147,7 +147,7 @@ mod enabled {
         task.requests
             .send(Request { payload, reply })
             .await
-            .map_err(|_| anyhow::anyhow!("Managed browser task ended"))?;
+            .map_err(|_| anyhow::Error::msg("Managed browser task ended"))?;
         result.await.context("Managed browser operation ended")?
     }
 
@@ -400,7 +400,7 @@ printf '%s close\n' "$$" >> '{}'
                         if cancel {
                             std::future::pending::<()>().await;
                         }
-                        Err::<(), anyhow::Error>(anyhow::anyhow!("synthetic task error"))
+                        Err::<(), anyhow::Error>(anyhow::Error::msg("synthetic task error"))
                     }
                 ));
                 ready.await.unwrap();
